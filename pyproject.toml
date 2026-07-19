@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tapetruth"
+version = "0.1.0"
+description = "Records are hypotheses; the tape is truth. A vendor-neutral corporate-action and OHLCV bar-data integrity engine."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [
+    { name = "tapetruth contributors" },
+]
+keywords = [
+    "corporate-actions",
+    "ohlcv",
+    "data-quality",
+    "data-integrity",
+    "stock-splits",
+    "backtesting",
+    "quant",
+    "market-data",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
+dependencies = [
+    "polars>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+# NOTE: [project.urls] intentionally omitted here -- the coordinator sets these to the
+# actual repo URL at repo-creation time (see build report / handoff notes).
+
+[tool.setuptools.packages.find]
+include = ["tapetruth*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
