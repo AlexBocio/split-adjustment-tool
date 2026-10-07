@@ -110,3 +110,58 @@ def test_config_overrides_are_respected():
     assert default_out.row(0, named=True)["bad_print_flag"] == 1
     wide_out = apply_bad_print_guard(df, config=GuardConfig(band_high=2.0))
     assert wide_out.row(0, named=True)["bad_print_flag"] == 0
+
+
+# --- Regression tests for the crash-day fix (body-relative wicks, truth-confirmed opens) ---
+# Found on real data: a small-cap that opened at 6.66 and closed at 1.13 (a genuine one-day
+# crash, confirmed by sub-daily bars) had its open, high and low flattened because every
+# limit was measured against the close. Fixtures below are synthetic (repo rule).
+
+def test_real_crash_day_confirmed_by_truth_is_kept():
+    day = dt.date(2022, 3, 1)
+    df = _frame(_row("TESTCRASH", day, 6.66, 6.72, 1.00, 1.13))
+    truth = InMemoryTruthProvider({("TESTCRASH", day): {"high": 6.75, "low": 1.00, "n_bars": 17}})
+    row = apply_bad_print_guard(df, truth=truth).row(0, named=True)
+    assert row["bad_print_flag"] == 0
+    assert row["repair_source"] == "confirmed"
+    assert (row["open"], row["high"], row["low"]) == (6.66, 6.72, 1.00)
+
+
+def test_crash_day_open_without_truth_still_repaired():
+    # With no evidence, an open 5.9x the close is indistinguishable from a bad print.
+    day = dt.date(2022, 3, 1)
+    df = _frame(_row("TESTCRASH2", day, 6.66, 6.72, 1.00, 1.13))
+    row = apply_bad_print_guard(df).row(0, named=True)
+    assert row["bad_print_flag"] == 1
+    assert row["repair_source"] == "envelope"
+    assert row["open"] == 1.13
+
+
+def test_wicks_judged_against_body_not_close():
+    # Big gap-down day: body 10 -> 6; high 10.1 is a normal wick above the body (1.01x),
+    # even though it is 1.68x the close. Must be left alone.
+    day = dt.date(2022, 3, 2)
+    df = _frame(_row("TESTBODY", day, 10.0, 10.1, 5.9, 6.0))
+    row = apply_bad_print_guard(df).row(0, named=True)
+    assert row["bad_print_flag"] == 0
+
+
+def test_bad_low_far_below_body_still_repaired_from_truth():
+    # A decimal-slip low (69.0 on a ~690 day) sticks out far beyond the body: repaired from truth.
+    day = dt.date(2022, 3, 3)
+    df = _frame(_row("TESTSLIP", day, 689.6, 696.9, 69.0, 695.4))
+    truth = InMemoryTruthProvider({("TESTSLIP", day): {"high": 697.5, "low": 681.9, "n_bars": 17}})
+    row = apply_bad_print_guard(df, truth=truth).row(0, named=True)
+    assert row["bad_print_flag"] == 1
+    assert row["repair_source"] == "truth"
+    assert abs(row["low"] - 681.9) < 1e-9
+
+
+def test_truth_that_does_not_contain_the_close_is_ignored():
+    # A truth range that doesn't even contain the day's close is a degraded measurement.
+    day = dt.date(2022, 3, 4)
+    df = _frame(_row("TESTGARB", day, 100.0, 101.0, 40.0, 100.0))
+    truth = InMemoryTruthProvider({("TESTGARB", day): {"high": 60.0, "low": 30.0, "n_bars": 390}})
+    row = apply_bad_print_guard(df, truth=truth).row(0, named=True)
+    assert row["repair_source"] == "envelope"
+    assert row["low"] == 100.0

@@ -40,6 +40,15 @@ fallback -- but it means a genuinely enormous, real move that happens to lack su
 corroboration gets flattened. Wiring in a :class:`~tapetruth.providers.TruthProvider` is
 what turns "delete the wick" into "confirm and clamp the wick" -- see the `envelope_wick`
 class in :mod:`tapetruth.gauntlet` for a runnable demonstration of the difference.
+
+**Crash-day fix (v0.1.1).** Earlier versions measured every limit against the CLOSE. On a real
+one-day crash the open itself sits far from the close, so the open, high and low all looked
+"out of bounds" and a genuine move was flattened; a confirming truth source was then discarded by
+a fixed 2.5x-of-close sanity check. Now: (1) the OPEN is kept whenever a usable truth range shows
+trading there; (2) HIGH/LOW are judged as wicks against the day's BODY (max/min of open, close);
+(3) each truth extreme is sanity-checked on its own, and a truth range must contain the close to be
+usable at all. Without any truth source a real crash is still indistinguishable from a bad print --
+give the guard sub-daily data for volatile small caps.
 """
 from __future__ import annotations
 
@@ -78,6 +87,11 @@ class GuardConfig:
     #: Tolerance band (fraction) around the truth extreme under dense coverage -- e.g. 0.02
     #: means a daily low more than 2% below the truth low is defective.
     dense_exceed_tol: float = 0.02
+
+    #: Relative tolerance for "the truth source shows trading at this price": an open inside the
+    #: truth range (within this fraction), or a truth range that contains the close, counts as
+    #: confirmed. Confirmed real moves are never flattened.
+    confirm_tol: float = 0.02
 
     #: Floating-point slack for the geometry check (``high >= max(open,close)``,
     #: ``low <= min(open,close)``).
@@ -132,11 +146,7 @@ def apply_bad_print_guard(
         ``repair_source`` (String, ``"truth"`` / ``"envelope"`` / null).
     """
     band_low, band_high = config.band_low, config.band_high
-
-    def _oob(col: str) -> pl.Expr:
-        return (pl.col("close") > 0) & (
-            (pl.col(col) > band_high * pl.col("close")) | (pl.col(col) < band_low * pl.col("close"))
-        )
+    tol = config.confirm_tol
 
     truth_df = _gather_truth(df, truth)
     if truth_df.height > 0:
@@ -148,17 +158,45 @@ def apply_bad_print_guard(
             pl.lit(0, dtype=pl.Int64).alias("truth_n"),
         ])
 
-    truth_ok = (
+    # A truth source is only usable at all if it is internally sane AND its range contains the
+    # day's own close -- a sub-daily record of the same session must bracket where it ended.
+    truth_present = (
         pl.col("truth_high").is_not_null() & pl.col("truth_low").is_not_null()
-        & (pl.col("truth_high") >= pl.col("truth_low")) & (pl.col("close") > 0)
-        & (pl.col("truth_high") <= config.truth_sanity_band * pl.col("close"))
-        & (pl.col("truth_high") >= pl.col("close") / config.truth_sanity_band)
-        & (pl.col("truth_low") <= config.truth_sanity_band * pl.col("close"))
-        & (pl.col("truth_low") >= pl.col("close") / config.truth_sanity_band)
+        & (pl.col("truth_low") > 0) & (pl.col("truth_high") >= pl.col("truth_low"))
+        & (pl.col("close") > 0)
+        & (pl.col("close") >= pl.col("truth_low") * (1 - tol))
+        & (pl.col("close") <= pl.col("truth_high") * (1 + tol))
     )
+
+    # 1. OPEN. A real gap or crash moves the open away from the close; an open outside the band
+    #    is only repaired when no usable truth shows the session actually trading there.
+    open_oob = (pl.col("close") > 0) & (
+        (pl.col("open") > band_high * pl.col("close")) | (pl.col("open") < band_low * pl.col("close"))
+    )
+    open_confirmed = truth_present & (pl.col("open") >= pl.col("truth_low") * (1 - tol))         & (pl.col("open") <= pl.col("truth_high") * (1 + tol))
+    out = out.with_columns(pl.col("open").alias("_o0")).with_columns(
+        pl.when(open_oob & ~open_confirmed).then(pl.col("close")).otherwise(pl.col("open")).alias("_o"),
+        (open_oob & open_confirmed).alias("_open_confirmed"),
+    )
+
+    # 2. HIGH / LOW are WICKS: judged against the day's BODY (max/min of open and close), not
+    #    against the close alone -- a real crash moves the whole body, a bad print sticks out
+    #    beyond it. Measuring wicks against the close flattened genuine crash days.
+    body_hi = pl.max_horizontal("_o", "close")
+    body_lo = pl.min_horizontal("_o", "close")
+    high_oob = (body_hi > 0) & (pl.col("high") > band_high * body_hi)
+    low_oob = (body_lo > 0) & (pl.col("low") < band_low * body_lo)
+
+    # Each truth extreme is sanity-checked on its own, relative to the body: one wild extreme
+    # must not discard the other, and a truth value far outside even the loose sanity band is
+    # treated as a degraded measurement (it may carry the same bad print).
+    th_ok = truth_present & (pl.col("truth_high") <= config.truth_sanity_band * body_hi)         & (pl.col("truth_high") >= body_hi * (1 - tol))
+    tl_ok = truth_present & (pl.col("truth_low") >= body_lo / config.truth_sanity_band)         & (pl.col("truth_low") <= body_lo * (1 + tol))
+    truth_ok = th_ok & tl_ok
+
     geom_bad = (
-        (pl.col("high") < pl.max_horizontal("open", "close") * (1 - config.geometry_tol))
-        | (pl.col("low") > pl.min_horizontal("open", "close") * (1 + config.geometry_tol))
+        (pl.col("high") < body_hi * (1 - config.geometry_tol))
+        | (pl.col("low") > body_lo * (1 + config.geometry_tol))
     )
     range_bad = (
         (pl.col("low") > 0) & ((pl.col("high") / pl.col("low")) > config.range_insanity_ratio)
@@ -166,32 +204,39 @@ def apply_bad_print_guard(
         & ((pl.col("high") / pl.col("low"))
            > config.range_contradiction_mult * (pl.col("truth_high") / pl.col("truth_low")))
     )
-    dense_exceed = (
-        (pl.col("truth_n") >= config.dense_min_bars) & truth_ok
-        & ((pl.col("low") < (1 - config.dense_exceed_tol) * pl.col("truth_low"))
-           | (pl.col("high") > (1 + config.dense_exceed_tol) * pl.col("truth_high")))
-    )
-    hl_trigger = _oob("high") | _oob("low") | geom_bad | range_bad | dense_exceed
+    dense = (pl.col("truth_n") >= config.dense_min_bars) & truth_present
+    dense_low = dense & tl_ok & (pl.col("low") < (1 - config.dense_exceed_tol) * pl.col("truth_low"))
+    dense_high = dense & th_ok & (pl.col("high") > (1 + config.dense_exceed_tol) * pl.col("truth_high"))
+
+    fix_high = high_oob | geom_bad | range_bad | dense_high
+    fix_low = low_oob | geom_bad | range_bad | dense_low
 
     out = out.with_columns([
-        pl.when(_oob("open")).then(pl.col("close")).otherwise(pl.col("open")).alias("_o"),
-        pl.when(hl_trigger & truth_ok)
-          .then(pl.min_horizontal(pl.col("truth_high"), band_high * pl.col("close")))
-          .when(_oob("high") | geom_bad).then(pl.col("close"))
+        pl.when(fix_high & th_ok)
+          .then(pl.min_horizontal(pl.col("truth_high"), band_high * body_hi))
+          .when(fix_high).then(body_hi)
           .otherwise(pl.col("high")).alias("_h"),
-        pl.when(hl_trigger & truth_ok)
-          .then(pl.max_horizontal(pl.col("truth_low"), band_low * pl.col("close")))
-          .when(_oob("low") | geom_bad).then(pl.col("close"))
+        pl.when(fix_low & tl_ok)
+          .then(pl.max_horizontal(pl.col("truth_low"), band_low * body_lo))
+          .when(fix_low).then(body_lo)
           .otherwise(pl.col("low")).alias("_l"),
-    ]).with_columns([
-        ((pl.col("_o") != pl.col("open")) | (pl.col("_h") != pl.col("high"))
-         | (pl.col("_l") != pl.col("low"))).cast(pl.Int8).alias("bad_print_flag"),
-        pl.when(hl_trigger & truth_ok).then(pl.lit("truth"))
-          .when(_oob("open") | _oob("high") | _oob("low") | geom_bad).then(pl.lit("envelope"))
-          .otherwise(pl.lit(None, dtype=pl.String)).alias("repair_source"),
+        ((fix_high & th_ok) | (fix_low & tl_ok)).alias("_by_truth"),
+        ((fix_high & ~th_ok) | (fix_low & ~tl_ok)).alias("_by_env"),
     ]).with_columns([
         pl.col("_o").alias("open"),
-        pl.max_horizontal("_o", "_h", "close").alias("high"),
-        pl.min_horizontal("_o", "_l", "close").alias("low"),
-    ]).drop(["_o", "_h", "_l", "truth_high", "truth_low", "truth_n"])
+        pl.max_horizontal("_o", "_h", "close").alias("_H"),
+        pl.min_horizontal("_o", "_l", "close").alias("_L"),
+    ])
+    out = out.with_columns([
+        ((pl.col("_o") != pl.col("_o0")) | (pl.col("_H") != pl.col("high"))
+         | (pl.col("_L") != pl.col("low"))).cast(pl.Int8).alias("bad_print_flag"),
+    ]).with_columns([
+        pl.when((pl.col("bad_print_flag") == 1) & pl.col("_by_truth")).then(pl.lit("truth"))
+          .when(pl.col("bad_print_flag") == 1).then(pl.lit("envelope"))
+          .when(pl.col("_open_confirmed")).then(pl.lit("confirmed"))
+          .otherwise(pl.lit(None, dtype=pl.String)).alias("repair_source"),
+        pl.col("_H").alias("high"),
+        pl.col("_L").alias("low"),
+    ]).drop(["_o", "_h", "_l", "_H", "_L", "_by_truth", "_by_env", "_o0", "_open_confirmed",
+             "truth_high", "truth_low", "truth_n"])
     return out
