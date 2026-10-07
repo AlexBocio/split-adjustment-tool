@@ -27,6 +27,10 @@ The six classes
     A real disagreement exists, but you supplied (via `explain_fn`) a specific, citable
     reason for it -- a known scope difference (e.g. one side only tracks splits, not
     spin-offs), a post-coverage action on one side, or any other accepted, documented cause.
+``DATE_DIFFERS``
+    Both sides record the same events with the same ratios, but at least one event sits on a
+    different date (within ``event_date_window_days``) -- e.g. an announcement date vs the
+    market ex-date. Not passing: every date-anchored consumer reads the wrong day.
 ``NOT_COMPARABLE``
     There isn't enough overlapping data to say anything -- missing on one side, or too few
     overlapping dates to be statistically meaningful.
@@ -65,10 +69,11 @@ class ReconciliationClass:
     MINOR = "MINOR"
     EXACT_ADJUSTED_EQUIV = "EXACT_ADJUSTED_EQUIV"
     EXPLAINED = "EXPLAINED"
+    DATE_DIFFERS = "DATE_DIFFERS"
     NOT_COMPARABLE = "NOT_COMPARABLE"
     MISMATCH = "MISMATCH"
 
-    ALL = (EXACT, MINOR, EXACT_ADJUSTED_EQUIV, EXPLAINED, NOT_COMPARABLE, MISMATCH)
+    ALL = (EXACT, MINOR, EXACT_ADJUSTED_EQUIV, EXPLAINED, DATE_DIFFERS, NOT_COMPARABLE, MISMATCH)
     #: Classes that count as "agreement or accepted" for the acceptance gate.
     PASSING = (EXACT, MINOR, EXACT_ADJUSTED_EQUIV, EXPLAINED)
 
@@ -88,7 +93,14 @@ class ReconcileConfig:
     #: i.e. every period-over-period step agrees, only the total anchor differs.
     parallel_tol_ln: float = math.log(1.001)
     #: Fewer overlapping dates than this -> NOT_COMPARABLE (too little evidence to classify).
+    #: Overlap is counted AFTER an as-of (forward-fill) alignment, so a sparse one-row-per-event
+    #: reference table is comparable against a dense daily series.
     min_date_overlap: int = 5
+    #: A period-over-period factor change larger than this (log) is an EVENT (a split, etc.).
+    event_step_tol_ln: float = math.log(1.01)
+    #: Two events (one per side) with matching ratios count as the SAME event when their dates
+    #: are within this many calendar days; same event on different dates -> DATE_DIFFERS.
+    event_date_window_days: int = 10
 
 
 @dataclass
@@ -103,6 +115,12 @@ class SymbolReconciliation:
     max_abs_ln_diff: float | None
     mean_ln_diff: float | None
     std_ln_diff: float | None
+    n_events_ours: int = 0
+    n_events_reference: int = 0
+    #: One line per event-level disagreement, e.g. "RATIO_DIFFERS 2024-06-10 ours x0.1000 ref
+    #: x0.0500", "DATE_DIFFERS ours 2024-07-11 ref 2024-07-15 x0.1000", "ONLY_OURS ...",
+    #: "ONLY_REFERENCE ...".
+    event_issues: list[str] = field(default_factory=list)
 
 
 def _stats(diffs: list[float]) -> tuple[float, float, float, float]:
@@ -145,68 +163,91 @@ def reconcile_symbol(
         return SymbolReconciliation(symbol, ReconciliationClass.NOT_COMPARABLE,
                                      "no data on one or both sides", 0, None, None, None, None)
 
-    joined = ours.rename({"factor": "_ours"}).join(
-        reference.rename({"factor": "_ref"}), on="date", how="inner"
-    )
+    # As-of alignment: union of dates, each side forward-filled from its own last known value,
+    # so a sparse one-row-per-event table compares against a dense daily series.
+    o = ours.select(pl.col("date").cast(pl.Date), pl.col("factor").cast(pl.Float64).alias("_ours"))
+    r = reference.select(pl.col("date").cast(pl.Date), pl.col("factor").cast(pl.Float64).alias("_ref"))
+    dates = pl.concat([o.select("date"), r.select("date")]).unique().sort("date")
+    joined = (dates.join(o, on="date", how="left").join(r, on="date", how="left")
+              .with_columns(pl.col("_ours").forward_fill(), pl.col("_ref").forward_fill())
+              .filter(pl.col("_ours").is_not_null() & pl.col("_ref").is_not_null()
+                      & (pl.col("_ours") > 0) & (pl.col("_ref") > 0)))
     if joined.height < config.min_date_overlap:
         return SymbolReconciliation(
             symbol, ReconciliationClass.NOT_COMPARABLE,
-            f"only {joined.height} overlapping date(s), need >= {config.min_date_overlap}",
+            f"only {joined.height} overlapping date(s) after as-of alignment, need >= "
+            f"{config.min_date_overlap}",
             joined.height, None, None, None, None,
         )
 
-    ours_vals = joined["_ours"].to_list()
-    ref_vals = joined["_ref"].to_list()
-    diffs = []
-    for o, r in zip(ours_vals, ref_vals):
-        if o is None or r is None or o <= 0 or r <= 0:
-            continue
-        diffs.append(math.log(o) - math.log(r))
-    if len(diffs) < config.min_date_overlap:
-        return SymbolReconciliation(
-            symbol, ReconciliationClass.NOT_COMPARABLE,
-            f"only {len(diffs)} usable (positive, non-null) overlapping value(s), "
-            f"need >= {config.min_date_overlap}",
-            len(diffs), None, None, None, None,
-        )
-
+    d = joined["date"].to_list()
+    ov = joined["_ours"].to_list()
+    rv = joined["_ref"].to_list()
+    diffs = [math.log(a) - math.log(b) for a, b in zip(ov, rv)]
     median_abs, max_abs, mean_ln, std_ln = _stats(diffs)
     n = len(diffs)
 
-    if median_abs <= config.exact_tol_ln:
-        return SymbolReconciliation(symbol, ReconciliationClass.EXACT,
-                                     "median log-difference within exact tolerance",
-                                     n, median_abs, max_abs, mean_ln, std_ln)
+    def _events(vals):
+        ev = []
+        for i in range(1, len(vals)):
+            step = math.log(vals[i]) - math.log(vals[i - 1])
+            if abs(step) > config.event_step_tol_ln:
+                ev.append((d[i], step))
+        return ev
 
-    if median_abs <= config.minor_tol_ln:
-        return SymbolReconciliation(symbol, ReconciliationClass.MINOR,
-                                     "median log-difference within minor tolerance",
-                                     n, median_abs, max_abs, mean_ln, std_ln)
+    eo, er = _events(ov), _events(rv)
+    issues, used = [], set()
+    for (do_, so) in eo:
+        best = None
+        for k, (dr_, sr) in enumerate(er):
+            if k in used or abs(so - sr) > config.minor_tol_ln:
+                continue
+            gap = abs((dr_ - do_).days)
+            if gap <= config.event_date_window_days and (best is None or gap < best[1]):
+                best = (k, gap)
+        if best is not None:
+            used.add(best[0])
+            if best[1] > 0:
+                issues.append(f"DATE_DIFFERS ours {do_} ref {er[best[0]][0]} x{math.exp(so):.4f}")
+            continue
+        same_day = [k for k, (dr_, _) in enumerate(er) if k not in used and dr_ == do_]
+        if same_day:
+            used.add(same_day[0])
+            issues.append(f"RATIO_DIFFERS {do_} ours x{math.exp(so):.4f} "
+                          f"ref x{math.exp(er[same_day[0]][1]):.4f}")
+        else:
+            issues.append(f"ONLY_OURS {do_} x{math.exp(so):.4f}")
+    for k, (dr_, sr) in enumerate(er):
+        if k not in used:
+            issues.append(f"ONLY_REFERENCE {dr_} x{math.exp(sr):.4f}")
 
-    # Only reached once the disagreement is bigger than "minor" -- a small constant offset is
-    # already MINOR above; EXACT_ADJUSTED_EQUIV means a LARGE but perfectly parallel offset
-    # (every period-over-period step still agrees), the "different vintage/anchor" signature.
-    if std_ln <= config.parallel_tol_ln:
-        return SymbolReconciliation(
-            symbol, ReconciliationClass.EXACT_ADJUSTED_EQUIV,
-            "series are parallel (every period-over-period step agrees) but offset by a "
-            "constant -- consistent with a different vintage/anchor date, not a disagreement "
-            "about any actual event",
-            n, median_abs, max_abs, mean_ln, std_ln,
-        )
+    def _res(cls, detail):
+        return SymbolReconciliation(symbol, cls, detail, n, median_abs, max_abs, mean_ln, std_ln,
+                                    len(eo), len(er), issues)
 
+    if not issues:
+        # Every event agrees on date and ratio; judge the LEVEL on the worst date, not the median.
+        if max_abs <= config.exact_tol_ln:
+            return _res(ReconciliationClass.EXACT,
+                        "every event and every date agree within exact tolerance")
+        if max_abs <= config.minor_tol_ln:
+            return _res(ReconciliationClass.MINOR,
+                        "every event agrees; worst-date level difference within minor tolerance")
+        if std_ln <= config.parallel_tol_ln:
+            return _res(ReconciliationClass.EXACT_ADJUSTED_EQUIV,
+                        "every event agrees; the series are parallel but offset by a constant "
+                        "(different anchor/vintage, not a disagreement about any event)")
     if explain_fn is not None:
         explanation = explain_fn(symbol)
         if explanation:
-            return SymbolReconciliation(symbol, ReconciliationClass.EXPLAINED, explanation,
-                                         n, median_abs, max_abs, mean_ln, std_ln)
-
-    return SymbolReconciliation(
-        symbol, ReconciliationClass.MISMATCH,
-        f"median |ln diff| {median_abs:.4f} exceeds minor tolerance "
-        f"{config.minor_tol_ln:.4f} with no accepted explanation",
-        n, median_abs, max_abs, mean_ln, std_ln,
-    )
+            return _res(ReconciliationClass.EXPLAINED, explanation)
+    if issues and all(i.startswith("DATE_DIFFERS") for i in issues):
+        return _res(ReconciliationClass.DATE_DIFFERS, "; ".join(issues))
+    if issues:
+        return _res(ReconciliationClass.MISMATCH, "; ".join(issues))
+    return _res(ReconciliationClass.MISMATCH,
+                f"no event disagreement but the worst-date level difference {max_abs:.4f} exceeds "
+                f"minor tolerance {config.minor_tol_ln:.4f} and the series are not parallel")
 
 
 def reconcile_all(
@@ -225,11 +266,13 @@ def reconcile_all(
             "symbol": r.symbol, "classification": r.classification, "detail": r.detail,
             "n_dates_compared": r.n_dates_compared, "median_abs_ln_diff": r.median_abs_ln_diff,
             "max_abs_ln_diff": r.max_abs_ln_diff, "mean_ln_diff": r.mean_ln_diff,
-            "std_ln_diff": r.std_ln_diff,
+            "std_ln_diff": r.std_ln_diff, "n_events_ours": r.n_events_ours,
+            "n_events_reference": r.n_events_reference, "event_issues": "; ".join(r.event_issues),
         })
     schema = {"symbol": pl.String, "classification": pl.String, "detail": pl.String,
               "n_dates_compared": pl.Int64, "median_abs_ln_diff": pl.Float64,
-              "max_abs_ln_diff": pl.Float64, "mean_ln_diff": pl.Float64, "std_ln_diff": pl.Float64}
+              "max_abs_ln_diff": pl.Float64, "mean_ln_diff": pl.Float64, "std_ln_diff": pl.Float64,
+              "n_events_ours": pl.Int64, "n_events_reference": pl.Int64, "event_issues": pl.String}
     return pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
 
 

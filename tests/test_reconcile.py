@@ -114,3 +114,30 @@ def test_config_tolerances_are_respected():
     tight = ReconcileConfig(exact_tol_ln=0.5)  # very loose exact tolerance
     r = reconcile_symbol("TEST8", ours, ref, config=tight)
     assert r.classification == ReconciliationClass.EXACT
+
+
+# --- M2 regressions (specialist findings C1, C2) ---
+_LONG = [dt.date(2022, 1, 1) + dt.timedelta(days=i) for i in range(100)]
+
+
+def test_single_wrong_event_on_minority_of_dates_is_mismatch():
+    # ours wrong by 2x on the earliest 30% of dates (an extra event) -- a median would hide it
+    ours = _series(_LONG, [0.5] * 30 + [1.0] * 70)
+    ref = _series(_LONG, [1.0] * 100)
+    r = reconcile_symbol("TESTC1", ours, ref)
+    assert r.classification == ReconciliationClass.MISMATCH
+    assert any(i.startswith("ONLY_OURS") for i in r.event_issues)
+
+
+def test_five_day_misdate_is_date_differs():
+    ours = _series(_LONG, [0.1] * 50 + [1.0] * 50)
+    ref = _series(_LONG, [0.1] * 55 + [1.0] * 45)
+    r = reconcile_symbol("TESTC1B", ours, ref)
+    assert r.classification == ReconciliationClass.DATE_DIFFERS
+
+
+def test_sparse_event_table_is_comparable_with_dense_series():
+    dense = _series(_LONG, [0.1] * 50 + [1.0] * 50)
+    sparse = _series([_LONG[0], _LONG[50]], [0.1, 1.0])  # one row per event, typical vendor format
+    r = reconcile_symbol("TESTC2", dense, sparse)
+    assert r.classification == ReconciliationClass.EXACT
