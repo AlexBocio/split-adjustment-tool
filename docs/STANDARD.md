@@ -1,7 +1,7 @@
 # Bar-Data Integrity Standard
 
 **Status:** v1.0 (public edition)
-**Companion:** this is the method behind the [`tapetruth`](../README.md) engine.
+**Companion:** this is the method behind the [`split-adjustment-tool`](../README.md) engine.
 
 ---
 
@@ -54,7 +54,7 @@ retained third-party data.
 
 ## 3. The twelve rules
 
-| # | Rule | Rationale | In `tapetruth` |
+| # | Rule | Rationale | In `split-adjustment-tool` |
 |---|------|-----------|----------------|
 | 1 | Duplicate events collapse by date-cluster; canonical pick uses source rank, with the measured price-gap overriding rank when available | Multiple sources logging the same real event at slightly different dates (announcement vs. filing vs. market-effective date) compounds a single event's ratio N times if every row is multiplied in | `chain.collapse_duplicate_actions` |
 | 2 | Contradictory same-date and near-date claims resolve by the measured gap | A split and its exact inverse (or two different ratios) logged for the same real event cancel to a no-op, or compound into a fictitious combined factor, if both survive | `chain.collapse_same_date_conflicts`, `chain.collapse_near_date_conflicts` |
@@ -66,8 +66,8 @@ retained third-party data.
 | 8 | Daily high/low fields inside action windows should be validated (and, where possible, repaired) against an independent sub-daily source | A per-field vintage fix corrects *when* a field was adjusted, but not bad individual trade prints (odd-lot, out-of-sequence, error prints) that leak into a high or low; a real field is never a wild multiple away from its own close | `guard.apply_bad_print_guard` |
 | 9 | Repair only inside evidence-scoped jurisdictions | A magnitude test that can't distinguish a real defect from an ordinary feed-definition gap must be scoped to where defects are actually proven to occur, or it silently rewrites correct data at scale | `guard`'s dense-coverage jurisdiction (`dense_min_bars`) |
 | 10 | Write-invariants are enforced at the repair chokepoint *and* validated at rest | The measurement-sanity bound (is this truth value itself plausible?) and the output contract bound (what every downstream consumer is promised) are different things — a repair should respect both | `guard`'s band-clamp (chokepoint); validating "at rest" is your pipeline's job downstream of this engine |
-| 11 | Absence detection should use anti-joins against an independent expected-set, never a step's own bookkeeping | A step that only checks its own record of what it received can't detect a hole its own bookkeeping doesn't know about | Doctrine — outside this engine's scope (tapetruth verifies data you already have; it does not monitor an ingestion pipeline for silent gaps) |
-| 12 | Every writer should be atomic; every output file should be verified after write | A bare, non-atomic write over a file being concurrently read can silently truncate it | Doctrine — outside this engine's scope (tapetruth operates on in-memory DataFrames; how you persist the result is your pipeline's concern) |
+| 11 | Absence detection should use anti-joins against an independent expected-set, never a step's own bookkeeping | A step that only checks its own record of what it received can't detect a hole its own bookkeeping doesn't know about | Doctrine — outside this engine's scope (split-adjustment-tool verifies data you already have; it does not monitor an ingestion pipeline for silent gaps) |
+| 12 | Every writer should be atomic; every output file should be verified after write | A bare, non-atomic write over a file being concurrently read can silently truncate it | Doctrine — outside this engine's scope (split-adjustment-tool operates on in-memory DataFrames; how you persist the result is your pipeline's concern) |
 
 ## 4. Standing machinery (recommended cadence)
 
@@ -82,7 +82,7 @@ retained third-party data.
 ## 5. Acceptance metrics
 
 What "correct" means, numerically, on the included synthetic gauntlet
-(`python -m tapetruth.demo`):
+(`python -m split_adjustment_tool.demo`):
 
 - **Detection floor:** at least 80% of planted defects, across the eight `defect`-category
   classes, correctly caught and repaired or excluded.
@@ -94,14 +94,14 @@ What "correct" means, numerically, on the included synthetic gauntlet
   is scored and reported honestly, excluded from the headline detection number, not folded
   in as a false "pass."
 
-For your own external-reconciliation work (`tapetruth.reconcile`): the target is a high
+For your own external-reconciliation work (`split_adjustment_tool.reconcile`): the target is a high
 pass rate (EXACT + MINOR + EXACT_ADJUSTED_EQUIV + EXPLAINED) on the *comparable* set,
 with `NOT_COMPARABLE` symbols reported but excluded from the denominator, and zero
 unexplained `MISMATCH` on any symbol you'd consider "pinned" or load-bearing.
 
 ## 6. The honest-classes principle
 
-A reconciler that can only say "match" or "mismatch" hides information. `tapetruth.reconcile`
+A reconciler that can only say "match" or "mismatch" hides information. `split_adjustment_tool.reconcile`
 uses six classes instead of a boolean:
 
 - **EXACT** — the two series agree everywhere they overlap, within tight tolerance.
@@ -148,7 +148,7 @@ trust:
 4. **Spin-offs, special dividends and rights are not distinguished from splits by the tape.**
    A spin-off's value separation looks like a split of the same ratio. The only exclusion is a
    cited public record (`ChainConfig.recorded_mislabels`), and no distribution price factor is
-   computed -- `tapetruth.factors` adjusts for splits and reverse splits only.
+   computed -- `split_adjustment_tool.factors` adjusts for splits and reverse splits only.
 5. **Everything is keyed on the symbol string.** There is no permanent security identifier, so a
    reused ticker can attach one company's actions to another company's tape. Feed one symbol
    history per security.
@@ -156,7 +156,7 @@ trust:
    handed their answer key (`spinoff_mislabel` via `recorded_mislabels`, `mixed_vintage_ohl`
    via `vintage_fn`) and are reported as *configured*, not detected. Treat the gauntlet as a
    regression suite; real-data validation is reported separately in the README.
-7. **Absence/coverage monitoring (rules 11–12) is out of this engine's scope.** tapetruth
+7. **Absence/coverage monitoring (rules 11–12) is out of this engine's scope.** split-adjustment-tool
    verifies data you already have; it does not watch an ingestion pipeline for silent gaps
    or enforce atomic writes. Those remain your pipeline's responsibility.
 

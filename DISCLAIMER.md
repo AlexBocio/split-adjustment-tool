@@ -1,6 +1,6 @@
 # Disclaimer
 
-**tapetruth is provided for educational and research purposes only.**
+**split-adjustment-tool is provided for educational and research purposes only.**
 
 ## No warranty
 
@@ -25,19 +25,19 @@ TERMS.
 
 ## Not investment advice
 
-tapetruth IS A DATA-QUALITY TOOL, NOT AN INVESTMENT ADVISOR. NOTHING IN THIS SOFTWARE, ITS
+split-adjustment-tool IS A DATA-QUALITY TOOL, NOT AN INVESTMENT ADVISOR. NOTHING IN THIS SOFTWARE, ITS
 DOCUMENTATION, ITS OUTPUT (INCLUDING ANY REPORT, SCORECARD, RECONCILIATION RESULT, OR
 "CERTIFICATION"), OR ANY ACCOMPANYING MATERIAL CONSTITUTES OR SHOULD BE CONSTRUED AS
 INVESTMENT, FINANCIAL, LEGAL, OR TAX ADVICE, OR A RECOMMENDATION TO BUY, SELL, OR HOLD ANY
-SECURITY OR FINANCIAL INSTRUMENT. tapetruth does not have access to, and does not
+SECURITY OR FINANCIAL INSTRUMENT. split-adjustment-tool does not have access to, and does not
 distribute, any licensed market data — it operates only on data you supply yourself, and it
 tells you nothing about whether a security is a good or bad investment.
 
 ## Scope
 
-tapetruth's checks and repairs are heuristic, tolerance-based, and — as documented in
+split-adjustment-tool's checks and repairs are heuristic, tolerance-based, and — as documented in
 `docs/STANDARD.md` §8 ("Known gaps") — known to be incomplete. A clean scorecard on the
-included synthetic gauntlet (`python -m tapetruth.demo`) is evidence the engine is working
+included synthetic gauntlet (`python -m split_adjustment_tool.demo`) is evidence the engine is working
 as designed against a known, planted set of defects; it is not a guarantee that your own
 data is free of any defect, including defect classes the gauntlet does not model. Always
 validate output against your own independent sources before relying on it for anything

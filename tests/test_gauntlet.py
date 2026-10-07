@@ -1,9 +1,9 @@
 """Gauntlet round-trip test -- asserts detection/false-positive rates stay above the floors
 the demo (and README) advertise. Uses a smaller-than-default universe so the full test suite
-stays fast; the floors are the same ones `python -m tapetruth.demo` checks."""
+stays fast; the floors are the same ones `python -m split_adjustment_tool.demo` checks."""
 from __future__ import annotations
 
-from tapetruth.gauntlet import (
+from split_adjustment_tool.gauntlet import (
     DEFECT_CLASSES,
     GauntletConfig,
     build_gauntlet_universe,

@@ -21,12 +21,12 @@ See ``docs/STANDARD.md`` for the full doctrine and the incidents that forged eac
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import polars as pl
 
-from tapetruth.locator import find_unique_boundary
+from split_adjustment_tool.locator import find_unique_boundary
 
 __all__ = [
     "ChainConfig",
@@ -46,7 +46,7 @@ __all__ = [
 
 #: Rows written by a repair/reconciliation pass AFTER measuring a boundary directly on the
 #: tape are, by construction, more authoritative than any externally-sourced claim. If you
-#: ever feed tape-confirmed findings back in as actions (see :mod:`tapetruth.reconcile`),
+#: ever feed tape-confirmed findings back in as actions (see :mod:`split_adjustment_tool.reconcile`),
 #: tag their `source` with this constant and keep it first in your own
 #: ``ChainConfig.source_priority``.
 TAPE_CONFIRMED_SOURCE = "tape_confirmed"
@@ -193,10 +193,11 @@ def _cluster_ids(df: pl.DataFrame, config: ChainConfig, gap_fn) -> list[int]:
         block = rows[i:j]
         anchors = []  # dates of tape-confirmed distinct events inside this block
         for r in block:
-            if _tape_confirms(gap_fn, r["symbol"], r["date"], float(r["ratio_from"]),
-                              float(r["ratio_to"]), config.gap_pick_tolerance_ln):
-                if not anchors or (r["date"] - anchors[-1]).days > config.near_date_window_days:
-                    anchors.append(r["date"])
+            confirmed = _tape_confirms(gap_fn, r["symbol"], r["date"], float(r["ratio_from"]),
+                                       float(r["ratio_to"]), config.gap_pick_tolerance_ln)
+            distinct = not anchors or (r["date"] - anchors[-1]).days > config.near_date_window_days
+            if confirmed and distinct:
+                anchors.append(r["date"])
         if len(anchors) <= 1:
             ids.extend([cid] * len(block))
             cid += 1
@@ -396,7 +397,7 @@ def collapse_near_date_conflicts(
 
 
 def make_close_series_fn(bars) -> Callable[[str], pl.DataFrame | None]:
-    """Cached per-symbol close-series loader from a :class:`~tapetruth.providers.BarProvider`
+    """Cached per-symbol close-series loader from a :class:`~split_adjustment_tool.providers.BarProvider`
     -- shared by :func:`make_gap_fn`, :func:`make_last_bar_date_fn`, and
     :func:`snap_actions_to_tape`'s boundary search so all three read the same tape through
     one cache. Construct once, pass the SAME `series_fn` into all three."""
@@ -474,7 +475,7 @@ def snap_actions_to_tape(
 
     For each action with ``|ln(ratio_from/ratio_to)| >= config.large_ratio_threshold_ln``
     (small ratios are left alone -- single-day noise can fake a small boundary), search
-    :func:`~tapetruth.locator.find_unique_boundary` in
+    :func:`~split_adjustment_tool.locator.find_unique_boundary` in
     ``[date - config.snap_back_days, date + config.snap_fwd_days]``; on a unique, persistent
     hit, REWRITE the action's date to the tape date. This is a load-time view correction --
     if you're reading from a database, nothing there is mutated; you get a corrected frame
@@ -530,7 +531,7 @@ def refute_phantom_actions(
     ``"ADJUSTED"`` for this (symbol, date), the action is kept unconditionally -- this
     protects a REAL action whose price series arrived already pre-adjusted at the source (no
     tape gap exists anywhere in your data, not because the event is fake, but because a prior
-    vendor already applied it before you ever saw the series). tapetruth ships the mechanism
+    vendor already applied it before you ever saw the series). split-adjustment-tool ships the mechanism
     for this guard but no bundled vintage classifier -- you supply `vintage_fn` from
     whatever detects pre-adjusted vintages in your own pipeline, or omit it and lose this one
     protection layer.
@@ -545,17 +546,21 @@ def refute_phantom_actions(
     for i, r in enumerate(actions.iter_rows(named=True)):
         rf, rt = float(r["ratio_from"]), float(r["ratio_to"])
         if rf <= 0 or rt <= 0:
-            keep_idx.append(i); continue
+            keep_idx.append(i)
+            continue
         implied = math.log(rf / rt)
         if abs(implied) < config.large_ratio_threshold_ln:
-            keep_idx.append(i); continue
+            keep_idx.append(i)
+            continue
         if vintage_fn is not None and vintage_fn(r["symbol"], r["date"]) == "ADJUSTED":
-            keep_idx.append(i); continue
+            keep_idx.append(i)
+            continue
         m = gap_fn(r["symbol"], r["date"], r["date"])
         if m is None or m <= 0:
             # absence of evidence keeps the action -- logged so callers can flag it
             unmeasurable.append({k: r[k] for k in ("symbol", "date", "ratio_from", "ratio_to")})
-            keep_idx.append(i); continue
+            keep_idx.append(i)
+            continue
         lm = math.log(m)
         if (abs(lm) < config.phantom_flat_tolerance_ln
                 and abs(lm - implied) > config.phantom_disagreement_tolerance_ln):

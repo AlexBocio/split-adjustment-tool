@@ -3,14 +3,14 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tapetruth"
-version = "0.1.0"
-description = "Records are hypotheses; the tape is truth. A vendor-neutral corporate-action and OHLCV bar-data integrity engine."
+name = "split-adjustment-tool"
+version = "0.2.0"
+description = "Verify, repair and apply stock-split adjustments against your own as-traded price tape."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 authors = [
-    { name = "tapetruth contributors" },
+    { name = "split-adjustment-tool contributors" },
 ]
 keywords = [
     "corporate-actions",
@@ -23,7 +23,7 @@ keywords = [
     "market-data",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
@@ -42,13 +42,30 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.5",
 ]
 
-# NOTE: [project.urls] intentionally omitted here -- the coordinator sets these to the
-# actual repo URL at repo-creation time (see build report / handoff notes).
+[project.urls]
+Homepage = "https://github.com/AlexBocio/split-adjustment-tool"
+Repository = "https://github.com/AlexBocio/split-adjustment-tool"
+Issues = "https://github.com/AlexBocio/split-adjustment-tool/issues"
+Changelog = "https://github.com/AlexBocio/split-adjustment-tool/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
-include = ["tapetruth*"]
+include = ["split_adjustment_tool*"]
+
+[tool.setuptools.package-data]
+split_adjustment_tool = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM"]
+# Config dataclasses (ChainConfig(), GuardConfig(), ...) are used as defaults on purpose: they are
+# never mutated by the functions that receive them.
+ignore = ["B008"]

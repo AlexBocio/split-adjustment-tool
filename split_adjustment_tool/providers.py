@@ -1,9 +1,9 @@
-"""Pluggable IO for tapetruth.
+"""Pluggable IO for split-adjustment-tool.
 
-tapetruth never reads a database, a REST API, or a hardcoded file path. Every module that
+split-adjustment-tool never reads a database, a REST API, or a hardcoded file path. Every module that
 needs bar data, corporate-action claims, or independent sub-daily "truth" takes a small
 object instead -- you decide where your data actually lives (CSV, Parquet, a database, an
-in-memory DataFrame, a live API client) and hand tapetruth an object shaped like one of the
+in-memory DataFrame, a live API client) and hand split-adjustment-tool an object shaped like one of the
 three ``Protocol``\\ s below. Reference implementations for CSV, Parquet, and plain
 in-memory DataFrames/dicts are included so most users never need to write their own.
 
@@ -15,9 +15,9 @@ The three roles, and why they're separate:
 - :class:`ActionSource` -- corporate-action CLAIMS (splits, reverse splits, ...) from
   wherever you get them (a vendor feed, a filing parser, a spreadsheet). Claims are
   hypotheses, never applied at face value -- that's the whole point of the collapse chain
-  in :mod:`tapetruth.chain`.
+  in :mod:`split_adjustment_tool.chain`.
 - :class:`TruthProvider` -- optional, independent sub-daily price extremes (e.g. minute
-  bars) used by :mod:`tapetruth.guard` to repair or confirm a daily bar's high/low against
+  bars) used by :mod:`split_adjustment_tool.guard` to repair or confirm a daily bar's high/low against
   a source that isn't the daily print itself.
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ class BarProvider(Protocol):
 @runtime_checkable
 class ActionSource(Protocol):
     """Corporate-action CLAIMS -- hypotheses to be confirmed or refuted against the tape,
-    never applied at face value (see :mod:`tapetruth.chain`)."""
+    never applied at face value (see :mod:`split_adjustment_tool.chain`)."""
 
     def get_actions(self) -> pl.DataFrame:
         """Returns columns symbol/date/ratio_from/ratio_to/source/type (see
@@ -89,7 +89,7 @@ class ActionSource(Protocol):
 @runtime_checkable
 class TruthProvider(Protocol):
     """Independent sub-daily (e.g. minute-bar) price extremes for a (symbol, date) pair --
-    used by :mod:`tapetruth.guard` to repair or confirm a daily bar's high/low. Optional
+    used by :mod:`split_adjustment_tool.guard` to repair or confirm a daily bar's high/low. Optional
     everywhere it's accepted: pass ``None`` and the guard falls back to envelope-only
     repair."""
 
@@ -108,7 +108,7 @@ class TruthProvider(Protocol):
 
 class InMemoryBarProvider:
     """:class:`BarProvider` backed by a plain ``dict[symbol, DataFrame]`` already in
-    memory. The natural glue for tests and for :mod:`tapetruth.gauntlet`."""
+    memory. The natural glue for tests and for :mod:`split_adjustment_tool.gauntlet`."""
 
     def __init__(self, bars: dict[str, pl.DataFrame]):
         self._bars = bars

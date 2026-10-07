@@ -1,6 +1,6 @@
 """Split adjustment: turn confirmed corporate actions into adjustment factors and adjusted bars.
 
-This is the step the rest of the package exists to make safe. :func:`tapetruth.chain.collapse_all`
+This is the step the rest of the package exists to make safe. :func:`split_adjustment_tool.chain.collapse_all`
 decides WHICH split claims are real (right ratio, right date); this module applies them.
 
 Convention (CRSP-style, documented so there is no ambiguity):
@@ -40,10 +40,10 @@ def _implied(actions: pl.DataFrame) -> pl.DataFrame:
 def build_factor_table(actions: pl.DataFrame, start_date=None) -> pl.DataFrame:
     """Sparse factor table, one row per event plus an optional starting row:
     ``symbol, date, price_factor, volume_factor`` where each row's factors apply from that date
-    until the next row. This is the usual vendor format and what :mod:`tapetruth.reconcile`
+    until the next row. This is the usual vendor format and what :mod:`split_adjustment_tool.reconcile`
     compares (it as-of aligns sparse tables).
 
-    `actions` should already be cleaned (pass it through :func:`tapetruth.chain.collapse_all`).
+    `actions` should already be cleaned (pass it through :func:`split_adjustment_tool.chain.collapse_all`).
     `start_date`, if given, adds a row at that date carrying the fully-compounded factor for all
     history before the first event.
     """
@@ -62,7 +62,7 @@ def build_factor_table(actions: pl.DataFrame, start_date=None) -> pl.DataFrame:
         after.reverse()
         if start_date is not None and ds and start_date < ds[0]:
             out.append({"symbol": sym, "date": start_date, "price_factor": tail})
-        for d, f in zip(ds, after):
+        for d, f in zip(ds, after, strict=True):
             out.append({"symbol": sym, "date": d, "price_factor": f})
     schema = {"symbol": pl.String, "date": pl.Date, "price_factor": pl.Float64}
     df = pl.DataFrame(out, schema=schema) if out else pl.DataFrame(schema=schema)
@@ -75,7 +75,7 @@ def apply_split_adjustment(bars: pl.DataFrame, actions: pl.DataFrame) -> pl.Data
 
     `bars` needs ``symbol, date`` and any of ``open/high/low/close`` (raw, as traded); all other
     columns pass through. `actions` should already be cleaned by
-    :func:`tapetruth.chain.collapse_all`. Symbols with no actions get factor 1.
+    :func:`split_adjustment_tool.chain.collapse_all`. Symbols with no actions get factor 1.
     """
     ev = _implied(actions)
     b = bars.with_columns(pl.col("date").cast(pl.Date)).with_row_index("_ri")

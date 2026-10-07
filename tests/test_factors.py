@@ -1,4 +1,4 @@
-"""Unit tests for tapetruth.factors -- synthetic fixtures only."""
+"""Unit tests for split_adjustment_tool.factors -- synthetic fixtures only."""
 from __future__ import annotations
 
 import datetime as dt
@@ -6,7 +6,7 @@ import math
 
 import polars as pl
 
-from tapetruth.factors import apply_split_adjustment, build_factor_table
+from split_adjustment_tool.factors import apply_split_adjustment, build_factor_table
 
 _D = [dt.date(2023, 1, 2) + dt.timedelta(days=i) for i in range(10)]
 

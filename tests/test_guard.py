@@ -1,16 +1,16 @@
-"""Unit tests for tapetruth.guard.apply_bad_print_guard -- synthetic fixtures only."""
+"""Unit tests for split_adjustment_tool.guard.apply_bad_print_guard -- synthetic fixtures only."""
 from __future__ import annotations
 
 import datetime as dt
 
 import polars as pl
 
-from tapetruth.guard import GuardConfig, apply_bad_print_guard
-from tapetruth.providers import InMemoryTruthProvider
+from split_adjustment_tool.guard import GuardConfig, apply_bad_print_guard
+from split_adjustment_tool.providers import InMemoryTruthProvider
 
 
-def _row(symbol, date, o, h, l, c):
-    return {"symbol": symbol, "date": date, "open": o, "high": h, "low": l, "close": c}
+def _row(symbol, date, o, h, lo, c):
+    return {"symbol": symbol, "date": date, "open": o, "high": h, "low": lo, "close": c}
 
 
 def _frame(*rows) -> pl.DataFrame:

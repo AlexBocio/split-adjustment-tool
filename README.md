@@ -1,10 +1,12 @@
-# tapetruth
+# split-adjustment-tool
 
-**Records are hypotheses; the tape is truth.**
+**Verify, repair and apply stock-split adjustments against your own price tape.**
 
-A small, vendor-neutral, pluggable Python engine that verifies and repairs corporate-action
-claims (splits, reverse splits) and OHLCV bar-data prints against your own price tape —
-instead of trusting any single feed at face value.
+Split records are claims, and claims are often wrong: a spin-off logged as a split, the same
+split logged twice by two sources, a split dated three days off, a reverse split that never
+happened. Any backtest built on them is quietly wrong. This small, vendor-neutral Python library
+checks every claim against the price series you actually have, keeps the real ones, fixes the
+dates it can, rejects the fakes, and then produces split-adjusted prices and volume.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
@@ -13,136 +15,116 @@ instead of trusting any single feed at face value.
 
 ## Why this exists
 
-In 2024–2025, users of a well-known retail brokerage's market-data API discovered that
-several of its historical split adjustments were simply wrong. The vendor's own forum
-confirmed it plainly:
+In September 2025 a user of a well-known retail brokerage's market-data API posted a list of
+more than 20 wrong split records across 19 tickers on the vendor's own forum, most of them
+spin-offs whose share distribution had been recorded as a split ratio:
 
-> "There is a systemic bug mixing up the split ratio whenever it was converted from a
-> spin-off."
+> "I found that there is a systemic bug mixing up the split ratio whenever it was converted
+> from a spin-off."
 > — [forum.alpaca.markets/t/17839](https://forum.alpaca.markets/t/17839)
 
-At least 13 tickers were affected. The fix was reactive: patched one ticker at a time, after
-users noticed and reported it. That's the failure mode this project exists to catch *before*
-it reaches your backtest: a corporate-action record is a claim from some upstream system —
-scraped, filed, or vendor-computed — and claims can simply be wrong. A spin-off's ~50% value
-separation looks, in the price series alone, exactly like a 1-for-2 split. A duplicate row
-from a second data source compounds a real split into a fictitious 1000x factor. An action
-logged three days off from its true effective date breaks every downstream calculation that
-anchors to a date. None of these are exotic edge cases — they are the *normal* failure modes
-of corporate-action data, and they silently corrupt any analysis built on top.
-
-tapetruth's answer: **your own as-traded price series is truth.** It carries every real
-split as a literal, permanent price discontinuity, immune to any adjustment-factor bug by
-construction. A claimed corporate action is applied only where that tape confirms it — the
-right ratio, at the right date, with next-bar persistence. Everything else is either snapped
-to where the tape says it actually happened, or refuted outright.
+That is the normal state of corporate-action data, not an exotic edge case. This library's
+answer: **your own as-traded price series is the evidence.** A real split leaves a permanent jump
+in the raw prices on its ex-date. A claim is kept where that jump is there, moved to where the
+jump actually is when it was misdated, and rejected when the prices show nothing happened.
 
 ## What it does
 
-tapetruth ships three independent mechanisms, all vendor-neutral and pluggable:
-
-| Module | What it catches |
+| Module | What it does |
 |---|---|
-| `tapetruth.chain` | **Corporate-action de-duplication and conflict resolution.** Multi-source duplicate rows for the same event, same-date contradictions (a "split" and a "reverse split" logged for the same day), near-date fabrications, actions dated after a symbol's last bar, misdated actions (snapped to their true tape boundary), and lone phantom claims the tape flatly contradicts. |
-| `tapetruth.guard` | **OHLC bad-print repair.** Out-of-band fields, geometry violations (a high below its own candle body), range-insane days an independent sub-daily source contradicts, and in-band bad prints only dense sub-daily coverage can catch — repaired using truth data when available, never silently deleted. |
-| `tapetruth.reconcile` | **Honest-class reconciliation.** Compares two independent adjustment-factor series and classifies the result as EXACT / MINOR / EXACT_ADJUSTED_EQUIV / EXPLAINED / NOT_COMPARABLE / MISMATCH — never collapsing "no data to compare" and "genuinely wrong" into the same bucket. |
+| `split_adjustment_tool.chain` | **Cleans split claims.** Collapses duplicates from several sources (but never merges two real splits that each show up in the prices), resolves same-day and near-day contradictions by the measured price jump, drops claims after your data ends, moves misdated claims to the real jump, and rejects lone phantoms on a flat tape. Claims across a trading halt are kept and flagged as unmeasurable, never rejected. |
+| `split_adjustment_tool.factors` | **Applies them.** `apply_split_adjustment(bars, actions)` adds a cumulative price factor and volume factor (CRSP-style: anchored at the latest bar, effective from each ex-date) and `adj_open/high/low/close` + `adj_volume`; dollar volume is unchanged by construction. `build_factor_table` gives the sparse one-row-per-event form. |
+| `split_adjustment_tool.reconcile` | **Compares two adjustment histories event by event** (yours vs a vendor's): each split is matched, `DATE_DIFFERS`, `RATIO_DIFFERS`, or only on one side. Sparse vendor tables are aligned as-of, so they compare against a daily series. |
+| `split_adjustment_tool.guard` | **Repairs bad price prints** in daily bars (a low far below the day's body, a high below its own open). With intraday data it repairs from the intraday extreme; a wild move the intraday data confirms is kept and flagged as `confirmed_extreme`, never overwritten. |
 
-Twelve defect classes, each with a synthetic, ground-truth-labeled test case in the included
-benchmark (see below): duplicate actions, same-date contradictions, near-date fakes,
-post-coverage actions, spin-off mislabels, misdated actions, phantom actions, extreme-ratio
-real splits (a false-positive-avoidance check), mixed-vintage OHL, envelope-deleted wicks,
-in-band phantom dips, and — reported honestly, not hidden — an isolated bad-close V-spike
-that the current engine does **not** catch (see `docs/STANDARD.md` "Known gaps").
-
-Everything is IO-agnostic. tapetruth never opens a database connection or calls an API —
-you hand it a small object (a `BarProvider`, an `ActionSource`, optionally a
-`TruthProvider`) that reads from wherever your data actually lives. Reference
-implementations for CSV, Parquet, and plain in-memory DataFrames ship in the box.
+Everything is IO-agnostic: you hand it a small provider object for your bars and claims (CSV,
+Parquet and in-memory implementations included). It never opens a database or calls an API.
 
 ## Quickstart
 
 ```bash
-pip install -e .          # from a clone; PyPI package planned (see Roadmap)
+git clone https://github.com/AlexBocio/split-adjustment-tool && cd split-adjustment-tool
+pip install -e .
+python -m split_adjustment_tool.demo      # the benchmark, end to end, in a few seconds
 ```
 
 ```python
-from tapetruth import ChainConfig, collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
-from tapetruth.providers import CSVBarProvider, CSVActionSource
+import polars as pl
+from split_adjustment_tool import (collapse_all, make_close_series_fn, make_gap_fn,
+                                   make_last_bar_date_fn, apply_split_adjustment)
+from split_adjustment_tool.providers import CSVBarProvider, CSVActionSource
 
-bars = CSVBarProvider("my_bars_dir/")           # one CSV per symbol: date,open,high,low,close,volume
-actions = CSVActionSource("my_actions.csv").get_actions()   # symbol,date,ratio_from,ratio_to[,source][,type]
+bars = CSVBarProvider("my_bars_dir/")                       # one CSV per symbol: date,open,high,low,close,volume (as traded)
+claims = CSVActionSource("my_splits.csv").get_actions()     # symbol,date,ratio_from,ratio_to[,source]
+# ratio convention: a 1-for-10 forward split is 1,10; a 1-for-5 reverse split is 5,1
 
 series_fn = make_close_series_fn(bars)
-collapsed, stats = collapse_all(
-    actions,
-    gap_fn=make_gap_fn(series_fn=series_fn),
-    last_date_fn=make_last_bar_date_fn(series_fn=series_fn),
-    series_fn=series_fn,
-)
-print(stats)  # per-stage counts: mislabel, post_coverage, duplicate, same_date, near_date, snap, phantom
+clean, stats = collapse_all(claims, gap_fn=make_gap_fn(series_fn=series_fn),
+                            last_date_fn=make_last_bar_date_fn(series_fn=series_fn),
+                            series_fn=series_fn)
+print(stats["phantom"]["refuted"], stats["phantom"]["unmeasurable_kept"], stats["snap"]["snapped"])
+
+raw = pl.read_csv("my_bars_dir/ABC.csv", try_parse_dates=True).with_columns(pl.lit("ABC").alias("symbol"))
+adjusted = apply_split_adjustment(raw, clean)               # adds price_factor, volume_factor, adj_* columns
 ```
 
-Then see it work end-to-end, with zero setup:
+## Real-data validation
 
-```bash
-python -m tapetruth.demo
-```
+Checked on real US equity data (8 stocks: five large forward splits in 2024 and three micro-cap
+reverse splits in 2026, about 3 years of daily bars each):
 
-This generates a synthetic universe of planted defects with known ground truth, runs the
-full engine over it, and prints a scorecard — detection rate per defect class,
-false-positive rate on clean data, and the engine's honestly-reported known gaps.
+- **Claims:** 8 real splits plus 6 planted bad claims (a duplicate, a 4-day misdate, two phantoms,
+  a wrong ratio, a same-day contradiction, a claim after the data ends): **14 of 14 handled
+  correctly** — the misdated split was moved to its real date from the price jump alone.
+- **Adjustment:** adjusted closes from this library matched an independently built adjusted series
+  on **5,530 of 5,530 trading days** (worst difference 7e-16, i.e. identical), including micro-caps
+  with back-to-back reverse splits.
+- **Comparison:** against a hand-made reference list, the reconciler flagged a planted misdate
+  (`DATE_DIFFERS`), a planted wrong ratio (`RATIO_DIFFERS`), a planted phantom, and two real earlier
+  reverse splits the reference list had missed.
+- **Bad prints:** on 6,369 real daily bars with hourly data, the guard changed exactly one bar —
+  a real decimal-slip low (69.005 on a ~$690 day), repaired to 681.94 — and caught two documented
+  historical bad prints; three real crash days were kept and flagged, not flattened.
 
-## The gauntlet — score your own pipeline
+## The benchmark
 
-`tapetruth.gauntlet` is both the test fixture for this repository AND a standalone
-benchmark you can point at your own corporate-action / bar-repair logic. It generates
-realistic synthetic OHLCV data (geometric random walk, realistic daily volatility, gaps,
-wicks, log-normal volume) with the twelve defect classes planted at known dates with known
-ground truth — no real ticker, no licensed price data, nothing that can't ship in a public
-repository, and (because the ground truth is known) a *better* demonstration than any real
-dataset could be, since detection and repair are measurable rather than asserted.
+`python -m split_adjustment_tool.demo` builds a synthetic universe (no real tickers, no licensed
+data) with 16 classes of planted problems and real-looking events, runs everything, and prints a
+scorecard. The verdict requires defects caught **and** every class of real events kept (at least
+95% per class), so a tool that deletes real splits cannot pass. Two classes (`spinoff_mislabel`,
+`mixed_vintage_ohl`) are handed their answer key and are labelled *configured*. Treat it as a
+regression suite you can also point at your own pipeline (`split_adjustment_tool.gauntlet`), not as
+proof on its own — the real-data numbers above are the evidence.
 
-```python
-from tapetruth.gauntlet import GauntletConfig, build_gauntlet_universe, run_gauntlet, score_run
+## Limits (read before relying on it)
 
-universe = build_gauntlet_universe(GauntletConfig())
-result = run_gauntlet(universe)                 # swap this line for YOUR engine's output
-scorecard = score_run(universe, result)
-print(scorecard.overall_detection_rate, scorecard.clean_false_positive_rate)
-```
-
-## Method
-
-The full doctrine — twelve rules, each tied to the failure mode that forged it, plus the
-acceptance metrics and the honestly-tracked known gaps — is documented in
-[`docs/STANDARD.md`](docs/STANDARD.md). The general shape (discipline one data stream
-against an independent one, tolerance-banded, never assumed) has real academic lineage: the
-CRSP price/share adjustment-factor methodology is the closest ancestor (and has its own
-documented gaps in exactly this problem space — see the citations in `docs/STANDARD.md`
-§9), and the TAQ tick-cleaning literature (Barndorff-Nielsen et al., 2009) is the closest
-academic kin to the bad-print guard's design.
+- **Splits and reverse splits only.** Cash dividends, spin-offs and rights need a distribution
+  factor this library does not compute. A spin-off looks like a split in the prices; the only
+  exclusion is a cited record you supply (`ChainConfig.recorded_mislabels`).
+- **Ratios under 2x (3-for-2, 5-for-4, stock dividends) are de-duplicated but not price-verified** —
+  an ordinary day's move can mimic them, so a phantom 3-for-2 passes through.
+- **Keyed on the ticker string.** A reused ticker can attach one company's splits to another's
+  prices; give it one history per security.
+- **Without intraday data, the bad-print guard cannot tell a real one-day crash from a bad print**
+  on a volatile small stock. Give it intraday data for small caps.
+- **An isolated bad close that snaps back the next day is not caught** (tracked in the benchmark).
+- Full method, rules and known gaps: [`docs/STANDARD.md`](docs/STANDARD.md).
 
 ## Status
 
-**v0.1.0.** Published for educational and research purposes — see
-[`DISCLAIMER.md`](DISCLAIMER.md) for the full terms (AS-IS, no warranty, not investment
-advice). Licensed [Apache 2.0](LICENSE): free to use, modify, and redistribute, including
-commercially.
+**v0.2.0 (alpha).** For educational and research use — see [`DISCLAIMER.md`](DISCLAIMER.md) (AS-IS,
+no warranty, not investment advice). [Apache 2.0](LICENSE). It ships code and a synthetic benchmark;
+it does not ship, sell or redistribute any market data — you bring your own bars and claims.
+Changes: [`CHANGELOG.md`](CHANGELOG.md).
 
-tapetruth ships the engine and the benchmark. It does not ship, sell, or redistribute any
-market data — you bring your own bars and your own action claims.
+## Roadmap
 
-## Roadmap (planned, not yet shipped)
-
-- **Vendor adapter pack** — pre-built `BarProvider`/`ActionSource` implementations for
-  common data providers.
-- **Certification reports** — a standardized "validated against gauntlet vX" report format
-  for sharing reconciliation results.
-- **PyPI release** — `pip install tapetruth` without a clone.
-- **Additional defect classes** as they're discovered and measured.
+- Permanent security IDs and ticker history (so a reused ticker can't inherit splits).
+- Point-in-time factors (`as_of`): adjust as it was known on a date, for honest backtests.
+- Event types beyond splits (stock dividends, spin-offs, rights) with distribution factors.
+- A command-line tool; a PyPI release; a public real-data benchmark of hard cases.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please keep any test fixtures synthetic (no real
-ticker symbols, no licensed price data) — this keeps the repository legally simple to
-contribute to and to fork.
+Issues and pull requests are welcome. Keep test fixtures synthetic (no real tickers, no licensed
+price data) so the repository stays simple to contribute to and fork.

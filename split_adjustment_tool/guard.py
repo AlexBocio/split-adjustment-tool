@@ -37,9 +37,9 @@ snapping the offending field to close (the "envelope" repair).
 **A prior version of this exact mechanism deleted real wicks**: without any independent
 truth source, "the offending field must be wrong, clamp it to close" is the only defensible
 fallback -- but it means a genuinely enormous, real move that happens to lack sub-daily
-corroboration gets flattened. Wiring in a :class:`~tapetruth.providers.TruthProvider` is
+corroboration gets flattened. Wiring in a :class:`~split_adjustment_tool.providers.TruthProvider` is
 what turns "delete the wick" into "confirm and clamp the wick" -- see the `envelope_wick`
-class in :mod:`tapetruth.gauntlet` for a runnable demonstration of the difference.
+class in :mod:`split_adjustment_tool.gauntlet` for a runnable demonstration of the difference.
 
 **Crash-day fix (v0.1.1).** Earlier versions measured every limit against the CLOSE. On a real
 one-day crash the open itself sits far from the close, so the open, high and low all looked

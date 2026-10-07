@@ -1,7 +1,7 @@
-"""python -m tapetruth.demo -- the 60-second gauntlet.
+"""python -m split_adjustment_tool.demo -- the 60-second gauntlet.
 
 Builds a synthetic universe of corporate-action and OHLCV defects (planted, ground-truth
-labeled), runs it through the full tapetruth engine, and prints a scorecard: how many of
+labeled), runs it through the full split-adjustment-tool engine, and prints a scorecard: how many of
 each defect class did the engine catch, how often did it correctly leave legitimate data
 alone, and where are its known, documented gaps.
 
@@ -12,8 +12,8 @@ from __future__ import annotations
 import sys
 import time
 
-from tapetruth import __version__
-from tapetruth.gauntlet import (
+from split_adjustment_tool import __version__
+from split_adjustment_tool.gauntlet import (
     GauntletConfig,
     build_gauntlet_universe,
     demonstrate_vintage_awareness,
@@ -41,7 +41,7 @@ def _print_class_rows(scores) -> None:
 
 
 def main() -> int:
-    print(f"tapetruth v{__version__} -- the 60-second gauntlet")
+    print(f"split-adjustment-tool v{__version__} -- the 60-second gauntlet")
     print("records are hypotheses; the tape is truth.\n")
 
     t0 = time.time()

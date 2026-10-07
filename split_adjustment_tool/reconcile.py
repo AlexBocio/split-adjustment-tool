@@ -7,7 +7,7 @@ cumulative-adjustment-factor series for the same symbol -- yours and a reference
 classifies the result into one of six honest classes instead of a boolean.
 
 Both sides are just factor-series functions -- ``fn(symbol) -> pl.DataFrame(date, factor) |
-None``. tapetruth's own output (see :mod:`tapetruth.chain`) can be one side; a vendor, a
+None``. split-adjustment-tool's own output (see :mod:`split_adjustment_tool.chain`) can be one side; a vendor, a
 broker, or a second independent pipeline can be the other. Nothing here is vendor-specific.
 
 The six classes
@@ -46,8 +46,8 @@ never counted as failures.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import polars as pl
 
@@ -183,7 +183,7 @@ def reconcile_symbol(
     d = joined["date"].to_list()
     ov = joined["_ours"].to_list()
     rv = joined["_ref"].to_list()
-    diffs = [math.log(a) - math.log(b) for a, b in zip(ov, rv)]
+    diffs = [math.log(a) - math.log(b) for a, b in zip(ov, rv, strict=True)]
     median_abs, max_abs, mean_ln, std_ln = _stats(diffs)
     n = len(diffs)
 

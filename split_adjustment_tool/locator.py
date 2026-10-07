@@ -1,8 +1,8 @@
 """The shared tape-boundary locator.
 
 One function, used by two callers in a full deployment of this method: the load-time snap
-pass (:func:`tapetruth.chain.snap_actions_to_tape`) and a separate reconciliation-repair
-engine you might build on top of :mod:`tapetruth.reconcile` -- kept as ONE implementation so
+pass (:func:`split_adjustment_tool.chain.snap_actions_to_tape`) and a separate reconciliation-repair
+engine you might build on top of :mod:`split_adjustment_tool.reconcile` -- kept as ONE implementation so
 the two never drift apart (see ``docs/STANDARD.md`` D3: "one chain, one chokepoint").
 """
 from __future__ import annotations
@@ -54,7 +54,7 @@ def find_unique_boundary(
     implied_gap : float
         The ratio a genuine boundary at this action would produce:
         ``close_after / close_before``. For a ``ratio_from:ratio_to`` split claim this is
-        ``ratio_from / ratio_to`` (see :mod:`tapetruth.chain`).
+        ``ratio_from / ratio_to`` (see :mod:`split_adjustment_tool.chain`).
     back_days, fwd_days : int
         Search window, calendar days, before/after ``center_date``.
     tol_ln : float, optional

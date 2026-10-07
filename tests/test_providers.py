@@ -1,4 +1,4 @@
-"""Unit tests for tapetruth.providers -- synthetic fixtures only, using pytest's tmp_path
+"""Unit tests for split_adjustment_tool.providers -- synthetic fixtures only, using pytest's tmp_path
 for the CSV/Parquet round-trip tests (no real ticker symbols, no network)."""
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import datetime as dt
 
 import polars as pl
 
-from tapetruth.providers import (
+from split_adjustment_tool.providers import (
     BAR_SCHEMA,
     CSVActionSource,
     CSVBarProvider,

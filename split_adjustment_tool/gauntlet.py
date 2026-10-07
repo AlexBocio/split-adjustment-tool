@@ -1,4 +1,4 @@
-"""The synthetic defect gauntlet -- tapetruth's own benchmark.
+"""The synthetic defect gauntlet -- split-adjustment-tool's own benchmark.
 
 Generates a universe of synthetic OHLCV symbols with KNOWN, PLANTED defects across the
 twelve classes the engine is designed around, runs the full chain + guard over them, and
@@ -8,7 +8,7 @@ appears here or anywhere else in this package -- every symbol is synthetic
 (``TEST<CLASS><NN>``), generated from a geometric random walk with realistic daily
 volatility, gaps, wicks, and log-normal volume.
 
-This doubles as the public benchmark: ``python -m tapetruth.demo`` runs it end-to-end and
+This doubles as the public benchmark: ``python -m split_adjustment_tool.demo`` runs it end-to-end and
 prints a scorecard. Because the defects are planted with known ground truth, this is a
 BETTER demonstration than any real dataset could be -- detection and repair are measurable,
 not asserted.
@@ -39,12 +39,12 @@ from __future__ import annotations
 import datetime as dt
 import math
 import random
-from dataclasses import dataclass, field
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import polars as pl
 
-from tapetruth.chain import (
+from split_adjustment_tool.chain import (
     TAPE_CONFIRMED_SOURCE,
     ChainConfig,
     collapse_all,
@@ -53,8 +53,8 @@ from tapetruth.chain import (
     make_last_bar_date_fn,
     refute_phantom_actions,
 )
-from tapetruth.guard import GuardConfig, apply_bad_print_guard
-from tapetruth.providers import ACTION_SCHEMA, InMemoryBarProvider, InMemoryTruthProvider
+from split_adjustment_tool.guard import GuardConfig, apply_bad_print_guard
+from split_adjustment_tool.providers import ACTION_SCHEMA, InMemoryBarProvider, InMemoryTruthProvider
 
 __all__ = [
     "GauntletConfig",
@@ -140,7 +140,7 @@ class PlantResult:
     mislabels: dict
     defect_class: str
     category: str  # "defect" | "legitimate" | "known_gap"
-    check: Callable[["GauntletResult"], bool]
+    check: Callable[[GauntletResult], bool]
     description: str
 
 
@@ -181,9 +181,12 @@ def _generate_clean_bars(
         o = max(0.01, prev_close * math.exp(rng.gauss(0.0, daily_vol * 0.3)))
         body_hi, body_lo = max(o, c), min(o, c)
         h = body_hi * (1.0 + abs(rng.gauss(0.0, daily_vol * 0.4)))
-        l = max(0.01, body_lo * (1.0 - abs(rng.gauss(0.0, daily_vol * 0.4))))
+        lo = max(0.01, body_lo * (1.0 - abs(rng.gauss(0.0, daily_vol * 0.4))))
         v = int(max(1_000, rng.lognormvariate(math.log(800_000), 0.6)))
-        opens.append(o); highs.append(h); lows.append(l); vols.append(v)
+        opens.append(o)
+        highs.append(h)
+        lows.append(lo)
+        vols.append(v)
         prev_close = c
 
     return pl.DataFrame({
@@ -240,7 +243,7 @@ def _plant_duplicate_actions(i: int, cfg: GauntletConfig, rng: random.Random) ->
          "ratio_from": ratio_from, "ratio_to": ratio_to, "source": "filing_feed_b", "type": "split"},
     ]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         return result.actions.filter(pl.col("symbol") == symbol).height == 1
 
     all_offsets = [0] + other_offsets
@@ -266,7 +269,7 @@ def _plant_same_date_contradiction(i: int, cfg: GauntletConfig, rng: random.Rand
          "source": "text_feed", "type": "reverse_split"},  # fabricated inverse claim
     ]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         rows = result.actions.filter((pl.col("symbol") == symbol) & (pl.col("date") == d))
         if rows.height != 1:
             return False
@@ -297,7 +300,7 @@ def _plant_near_date_fake(i: int, cfg: GauntletConfig, rng: random.Random) -> Pl
          "source": "misparsed_feed", "type": "reverse_split"},  # fabricated ratio, unranked
     ]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         rows = result.actions.filter(pl.col("symbol") == symbol)
         if rows.height != 1:
             return False
@@ -323,7 +326,7 @@ def _plant_post_coverage_action(i: int, cfg: GauntletConfig, rng: random.Random)
     actions = [{"symbol": symbol, "date": action_date, "ratio_from": 1, "ratio_to": 10,
                "source": "stale_feed", "type": "split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         return result.actions.filter(pl.col("symbol") == symbol).height == 0
 
     return PlantResult(
@@ -348,7 +351,7 @@ def _plant_spinoff_mislabel(i: int, cfg: GauntletConfig, rng: random.Random) -> 
                  "synthetic spin-off value-separation event, mislabeled by the vendor as a "
                  "1:2 split (gauntlet class spinoff_mislabel)"}
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         return result.actions.filter(pl.col("symbol") == symbol).height == 0
 
     return PlantResult(
@@ -372,7 +375,7 @@ def _plant_misdated_action(i: int, cfg: GauntletConfig, rng: random.Random) -> P
     actions = [{"symbol": symbol, "date": d_wrong, "ratio_from": 1, "ratio_to": ratio_to,
                "source": "announcement_feed", "type": "split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         rows = result.actions.filter(pl.col("symbol") == symbol)
         if rows.height != 1:
             return False
@@ -403,7 +406,7 @@ def _plant_phantom_action(i: int, cfg: GauntletConfig, rng: random.Random) -> Pl
     actions = [{"symbol": symbol, "date": d, "ratio_from": 1, "ratio_to": ratio_to,
                "source": "misparsed_feed", "type": "split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         return result.actions.filter(pl.col("symbol") == symbol).height == 0
 
     return PlantResult(
@@ -424,7 +427,7 @@ def _plant_extreme_ratio_real_split(i: int, cfg: GauntletConfig, rng: random.Ran
     actions = [{"symbol": symbol, "date": d, "ratio_from": ratio_from, "ratio_to": 1,
                "source": "price_feed", "type": "reverse_split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         rows = result.actions.filter(pl.col("symbol") == symbol)
         if rows.height != 1:
             return False
@@ -456,7 +459,7 @@ def _plant_mixed_vintage_ohl(i: int, cfg: GauntletConfig, rng: random.Random) ->
                "source": "vendor_feed", "type": "split"}]
     vintage = {(symbol, d): "ADJUSTED"}
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         # Meaningful when vintage_fn is engaged (run_gauntlet always wires it in) --
         # see demonstrate_vintage_awareness() for the explicit with/without comparison.
         return result.actions.filter(pl.col("symbol") == symbol).height == 1
@@ -487,7 +490,7 @@ def _plant_envelope_wick(i: int, cfg: GauntletConfig, rng: random.Random) -> Pla
     ])
     truth = {(symbol, d): {"high": real_high, "low": real_low, "n_bars": 390}}
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         row = result.bars.filter((pl.col("symbol") == symbol) & (pl.col("date") == d))
         if row.height != 1:
             return False
@@ -520,7 +523,7 @@ def _plant_in_band_phantom_dip(i: int, cfg: GauntletConfig, rng: random.Random) 
     true_low = c * 0.985
     truth = {(symbol, d): {"high": c * 1.02, "low": true_low, "n_bars": 390}}  # dense coverage
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         row = result.bars.filter((pl.col("symbol") == symbol) & (pl.col("date") == d))
         if row.height != 1:
             return False
@@ -553,7 +556,7 @@ def _plant_bad_close_vspike(i: int, cfg: GauntletConfig, rng: random.Random) -> 
         pl.when(pl.col("date") == d).then(pl.lit(bad_close * 0.99)).otherwise(pl.col("low")).alias("low"),
     ])
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         row = result.bars.filter((pl.col("symbol") == symbol) & (pl.col("date") == d))
         if row.height != 1:
             return False
@@ -593,7 +596,7 @@ def _plant_serial_reverse_split(i: int, cfg: GauntletConfig, rng: random.Random)
                {"symbol": symbol, "date": d2, "ratio_from": r, "ratio_to": 1,
                 "source": "price_feed", "type": "reverse_split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         rows = result.actions.filter(pl.col("symbol") == symbol).sort("date")
         return rows.height == 2 and rows["date"].to_list() == [d1, d2]
 
@@ -621,7 +624,7 @@ def _plant_halted_reverse_split(i: int, cfg: GauntletConfig, rng: random.Random)
     actions = [{"symbol": symbol, "date": resume, "ratio_from": r, "ratio_to": 1,
                 "source": "price_feed", "type": "reverse_split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         return result.actions.filter(pl.col("symbol") == symbol).height == 1
 
     return PlantResult(
@@ -641,7 +644,7 @@ def _plant_real_small_ratio_split(i: int, cfg: GauntletConfig, rng: random.Rando
     actions = [{"symbol": symbol, "date": d, "ratio_from": ratio_from, "ratio_to": ratio_to,
                 "source": "price_feed", "type": "split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         rows = result.actions.filter(pl.col("symbol") == symbol)
         return rows.height == 1 and rows["date"][0] == d
 
@@ -659,7 +662,7 @@ def _plant_small_ratio_phantom(i: int, cfg: GauntletConfig, rng: random.Random) 
     actions = [{"symbol": symbol, "date": d, "ratio_from": 2, "ratio_to": 3,
                 "source": "misparsed_feed", "type": "split"}]
 
-    def check(result: "GauntletResult") -> bool:
+    def check(result: GauntletResult) -> bool:
         # known gap: True means the phantom STILL SURVIVES (the documented limitation holds)
         return result.actions.filter(pl.col("symbol") == symbol).height == 1
 
@@ -851,7 +854,7 @@ def score_run(universe: GauntletUniverse, result: GauntletResult) -> Scorecard:
 
 
 def demonstrate_vintage_awareness(universe: GauntletUniverse) -> dict:
-    """Runs :func:`~tapetruth.chain.refute_phantom_actions` on the `mixed_vintage_ohl`
+    """Runs :func:`~split_adjustment_tool.chain.refute_phantom_actions` on the `mixed_vintage_ohl`
     instances TWICE -- once with the `vintage_fn` hook engaged (correct), once without
     (naive) -- to make concrete what "vintage-aware" actually buys you. The main
     :func:`run_gauntlet` / :func:`score_run` pass always runs WITH the hook engaged (the

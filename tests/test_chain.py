@@ -1,11 +1,11 @@
-"""Unit tests for tapetruth.chain -- synthetic fixtures only (TEST1..TESTn symbols)."""
+"""Unit tests for split_adjustment_tool.chain -- synthetic fixtures only (TEST1..TESTn symbols)."""
 from __future__ import annotations
 
 import datetime as dt
 
 import polars as pl
 
-from tapetruth.chain import (
+from split_adjustment_tool.chain import (
     ChainConfig,
     collapse_all,
     collapse_duplicate_actions,
@@ -19,7 +19,7 @@ from tapetruth.chain import (
     refute_phantom_actions,
     snap_actions_to_tape,
 )
-from tapetruth.providers import InMemoryBarProvider
+from split_adjustment_tool.providers import InMemoryBarProvider
 
 
 def _make_bars(symbol_prices: dict[str, list[float]], start: dt.date = dt.date(2022, 1, 3)) -> InMemoryBarProvider:
@@ -370,8 +370,8 @@ def _serial_reverse_tape():
 
 
 def test_two_tape_confirmed_serial_reverse_splits_are_not_merged():
-    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
-    from tapetruth.providers import InMemoryBarProvider
+    from split_adjustment_tool import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from split_adjustment_tool.providers import InMemoryBarProvider
     days, bars = _serial_reverse_tape()
     acts = pl.DataFrame({"symbol": ["TESTSRS", "TESTSRS"], "date": [days[100], days[190]],
                          "ratio_from": [10, 10], "ratio_to": [1, 1]}).with_columns(pl.col("date").cast(pl.Date))
@@ -383,8 +383,8 @@ def test_two_tape_confirmed_serial_reverse_splits_are_not_merged():
 
 
 def test_duplicate_rows_of_one_event_still_collapse_with_tape():
-    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
-    from tapetruth.providers import InMemoryBarProvider
+    from split_adjustment_tool import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from split_adjustment_tool.providers import InMemoryBarProvider
     days, bars = _serial_reverse_tape()
     acts = pl.DataFrame({"symbol": ["TESTSRS"] * 3, "date": [days[100], days[100], days[98]],
                          "ratio_from": [10, 10, 10], "ratio_to": [1, 1, 1],
@@ -410,8 +410,9 @@ def test_anchor_clustering_does_not_chain():
 # --- M4 regression: a real reverse split after a long halt must not be refuted (C4) ---
 def test_reverse_split_after_halt_with_offsetting_drift_is_kept_and_flagged():
     import datetime as _dt
-    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
-    from tapetruth.providers import InMemoryBarProvider
+
+    from split_adjustment_tool import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from split_adjustment_tool.providers import InMemoryBarProvider
     start = _dt.date(2024, 1, 1)
     days = [start + _dt.timedelta(days=i) for i in range(100)]          # trades at 1.00
     resume = start + _dt.timedelta(days=160)                            # 60-day halt
@@ -431,8 +432,9 @@ def test_reverse_split_after_halt_with_offsetting_drift_is_kept_and_flagged():
 
 def test_phantom_on_continuous_tape_still_refuted():
     import datetime as _dt
-    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
-    from tapetruth.providers import InMemoryBarProvider
+
+    from split_adjustment_tool import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from split_adjustment_tool.providers import InMemoryBarProvider
     days = [_dt.date(2024, 1, 1) + _dt.timedelta(days=i) for i in range(200)]
     px = [50.0] * 200
     bars = pl.DataFrame({"symbol": ["TESTPH"] * 200, "date": days, "open": px, "high": px,

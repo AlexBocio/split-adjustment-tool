@@ -1,4 +1,4 @@
-"""Unit tests for tapetruth.locator.find_unique_boundary -- synthetic fixtures only."""
+"""Unit tests for split_adjustment_tool.locator.find_unique_boundary -- synthetic fixtures only."""
 from __future__ import annotations
 
 import datetime as dt
@@ -6,7 +6,7 @@ import math
 
 import polars as pl
 
-from tapetruth.locator import find_unique_boundary
+from split_adjustment_tool.locator import find_unique_boundary
 
 
 def _series(prices: list[float], start: dt.date = dt.date(2022, 1, 3)) -> pl.DataFrame:

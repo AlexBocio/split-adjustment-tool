@@ -1,11 +1,11 @@
-"""Unit tests for tapetruth.reconcile -- synthetic fixtures only."""
+"""Unit tests for split_adjustment_tool.reconcile -- synthetic fixtures only."""
 from __future__ import annotations
 
 import datetime as dt
 
 import polars as pl
 
-from tapetruth.reconcile import (
+from split_adjustment_tool.reconcile import (
     ReconcileConfig,
     ReconciliationClass,
     reconcile_all,
