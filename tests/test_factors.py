@@ -63,3 +63,16 @@ def test_factor_table_sparse_rows():
     assert t["date"].to_list() == [_D[0], _D[3], _D[7]]
     assert t["price_factor"].to_list() == [1.5, 3.0, 1.0]
     assert [round(v, 9) for v in t["volume_factor"].to_list()] == [round(1 / 1.5, 9), round(1 / 3.0, 9), 1.0]
+
+
+def test_intraday_bars_use_their_trading_date():
+    # minute bars: previous session's after-hours stay pre-split; ex-date pre-market is post-split
+    ts = [dt.datetime(2023, 1, 6, 19, 58), dt.datetime(2023, 1, 6, 19, 59),
+          dt.datetime(2023, 1, 9, 4, 0), dt.datetime(2023, 1, 9, 4, 1)]
+    bars = pl.DataFrame({"symbol": ["TESTI"] * 4, "ts": ts,
+                         "date": [t.date() for t in ts],  # exchange-local trading date
+                         "close": [200.0, 200.2, 20.03, 20.01], "volume": [10, 10, 100, 100]})
+    out = apply_split_adjustment(bars, _acts([("TESTI", dt.date(2023, 1, 9), 1, 10)]))
+    assert out["price_factor"].to_list() == [0.1, 0.1, 1.0, 1.0]
+    assert [round(v, 3) for v in out["adj_close"].to_list()] == [20.0, 20.02, 20.03, 20.01]
+    assert out["ts"].to_list() == ts  # extra columns and row order pass through
