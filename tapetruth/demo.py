@@ -23,6 +23,9 @@ from tapetruth.gauntlet import (
 
 _DETECTION_FLOOR = 0.80
 _FALSE_POSITIVE_CEILING = 0.02
+#: Every LEGITIMATE class must be preserved at least this often -- judged per class, so one
+#: class that deletes real events cannot hide inside an average.
+_LEGIT_CLASS_FLOOR = 0.95
 _BAR_WIDTH = 24
 
 
@@ -51,7 +54,7 @@ def main() -> int:
     n_symbols = len(universe.bars.symbols())
     n_actions = universe.actions_df.height
     print(f"  {n_symbols:,} symbols, {n_actions:,} planted action claims, "
-          f"{len(universe.plants):,} defect/legitimate instances across 12 classes\n")
+          f"{len(universe.plants):,} defect/legitimate instances across {len({p.defect_class for p in universe.plants})} classes\n")
 
     print("Running the collapse chain + bad-print guard...")
     result = run_gauntlet(universe)
@@ -97,8 +100,12 @@ def main() -> int:
     print(f"    with vintage_fn:    {vdemo['survived_with_vintage_awareness']}/"
           f"{vdemo['n_instances']} survive  (correct)")
 
+    legit = [s for s in scorecard.class_scores if s.category == "legitimate"]
+    worst_legit = min(legit, key=lambda s: s.rate) if legit else None
+    legit_ok = worst_legit is None or worst_legit.rate >= _LEGIT_CLASS_FLOOR
     passed = (scorecard.overall_detection_rate >= _DETECTION_FLOOR
-             and scorecard.clean_false_positive_rate <= _FALSE_POSITIVE_CEILING)
+             and scorecard.clean_false_positive_rate <= _FALSE_POSITIVE_CEILING
+             and legit_ok)
     print()
     print("=" * 72)
     print(f"RESULT: {'PASS' if passed else 'FAIL'}  "
@@ -107,7 +114,10 @@ def main() -> int:
           f"{_DETECTION_FLOOR * 100:.0f}%, "
           f"false-positive {scorecard.clean_false_positive_rate * 100:.2f}% "
           f"{'<=' if scorecard.clean_false_positive_rate <= _FALSE_POSITIVE_CEILING else '>'} "
-          f"{_FALSE_POSITIVE_CEILING * 100:.0f}%)")
+          f"{_FALSE_POSITIVE_CEILING * 100:.0f}%, "
+          f"worst legitimate class {worst_legit.defect_class if worst_legit else '-'} "
+          f"{(worst_legit.rate if worst_legit else 1.0) * 100:.1f}% "
+          f"{'>=' if legit_ok else '<'} {_LEGIT_CLASS_FLOOR * 100:.0f}%)")
     print("=" * 72)
     print(f"\nTotal time: {time.time() - t0:.1f}s. Full method: docs/STANDARD.md")
     return 0 if passed else 1

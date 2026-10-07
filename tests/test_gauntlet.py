@@ -20,7 +20,7 @@ _SMALL_CONFIG = GauntletConfig(n_instances_per_class=8, n_clean_symbols=20, n_tr
 
 def test_universe_has_expected_shape():
     universe = build_gauntlet_universe(_SMALL_CONFIG)
-    n_expected_plant_symbols = 12 * _SMALL_CONFIG.n_instances_per_class
+    n_expected_plant_symbols = len(DEFECT_CLASSES) * _SMALL_CONFIG.n_instances_per_class
     assert len(universe.plants) == n_expected_plant_symbols
     assert len(universe.clean_symbols) == _SMALL_CONFIG.n_clean_symbols
     assert len(universe.bars.symbols()) == n_expected_plant_symbols + _SMALL_CONFIG.n_clean_symbols
@@ -52,7 +52,7 @@ def test_known_gap_class_is_reported_and_not_counted():
     result = run_gauntlet(universe)
     scorecard = score_run(universe, result)
     gap_classes = {s.defect_class for s in scorecard.known_gap_scores}
-    assert gap_classes == {"bad_close_vspike"}
+    assert gap_classes == {"bad_close_vspike", "small_ratio_phantom"}
     defect_classes = {s.defect_class for s in scorecard.class_scores if s.category == "defect"}
     assert "bad_close_vspike" not in defect_classes
 

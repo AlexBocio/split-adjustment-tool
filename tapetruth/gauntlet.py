@@ -13,8 +13,14 @@ prints a scorecard. Because the defects are planted with known ground truth, thi
 BETTER demonstration than any real dataset could be -- detection and repair are measurable,
 not asserted.
 
-Three categories, twelve classes
+Three categories, sixteen classes
 ---------------------------------
+(Four hard real-world classes were added in v0.1.1: `serial_reverse_split`,
+`halted_reverse_split`, `real_small_ratio_split` (legitimate) and `small_ratio_phantom`
+(known gap). `spinoff_mislabel` and `mixed_vintage_ohl` are CONFIGURED classes: the gauntlet
+hands the engine their answer key via `recorded_mislabels` / `vintage_fn`, so their 100% shows
+the hook works, not that anything was detected unaided.)
+
 **defect** (8 classes) -- something is genuinely wrong; the engine should catch and fix it.
 `duplicate_actions`, `same_date_contradiction`, `near_date_fake`, `post_coverage_action`,
 `spinoff_mislabel`, `misdated_action`, `phantom_action`, `in_band_phantom_dip`.
@@ -79,7 +85,15 @@ DEFECT_CLASSES: dict[str, str] = {
     "mixed_vintage_ohl": "legitimate",
     "envelope_wick": "legitimate",
     "bad_close_vspike": "known_gap",
+    "serial_reverse_split": "legitimate",
+    "halted_reverse_split": "legitimate",
+    "real_small_ratio_split": "legitimate",
+    "small_ratio_phantom": "known_gap",
 }
+
+#: Classes whose outcome is decided by side-data the gauntlet itself supplies (an answer key):
+#: reported as CONFIGURED, not as independent detection.
+CONFIGURED_CLASSES = {"spinoff_mislabel", "mixed_vintage_ohl"}
 
 #: Classes that intentionally carry abnormal OHLC (as opposed to abnormal ACTIONS) --
 #: excluded from the clean-symbol false-positive denominator (they're supposed to look odd).
@@ -557,6 +571,104 @@ def _plant_bad_close_vspike(i: int, cfg: GauntletConfig, rng: random.Random) -> 
     )
 
 
+
+# ---------------------------------------------------------------------------------------
+# Hard real-world cases added in v0.1.1 (specialist review). These are the patterns that broke
+# earlier versions on real micro-cap data.
+# ---------------------------------------------------------------------------------------
+
+
+def _plant_serial_reverse_split(i: int, cfg: GauntletConfig, rng: random.Random) -> PlantResult:
+    symbol = f"TESTSRS{i:02d}"
+    base = rng.uniform(0.5, 3.0)  # micro-cap: repeat reverse splits to stay listed
+    bars = _generate_clean_bars(cfg.n_trading_days, cfg.start_date, base, cfg.daily_vol, rng)
+    n = cfg.n_trading_days
+    i1 = n // 3
+    i2 = i1 + rng.randint(max(5, n // 12), max(6, min(90, n // 3)))  # inside the collapse window
+    d1, d2 = bars["date"][i1], bars["date"][i2]
+    r = rng.choice([5, 10, 20])
+    bars = _inject_split(_inject_split(bars, d1, r, 1), d2, r, 1)
+    actions = [{"symbol": symbol, "date": d1, "ratio_from": r, "ratio_to": 1,
+                "source": "price_feed", "type": "reverse_split"},
+               {"symbol": symbol, "date": d2, "ratio_from": r, "ratio_to": 1,
+                "source": "price_feed", "type": "reverse_split"}]
+
+    def check(result: "GauntletResult") -> bool:
+        rows = result.actions.filter(pl.col("symbol") == symbol).sort("date")
+        return rows.height == 2 and rows["date"].to_list() == [d1, d2]
+
+    return PlantResult(
+        symbol, bars, actions, {}, {}, {}, "serial_reverse_split", "legitimate", check,
+        f"two real {r}:1 reverse splits {i2 - i1} trading days apart, both on the tape -- must "
+        f"stay TWO events, never collapsed into one",
+    )
+
+
+def _plant_halted_reverse_split(i: int, cfg: GauntletConfig, rng: random.Random) -> PlantResult:
+    symbol = f"TESTHLT{i:02d}"
+    base = rng.uniform(0.5, 3.0)
+    bars = _generate_clean_bars(cfg.n_trading_days, cfg.start_date, base, cfg.daily_vol, rng)
+    n = cfg.n_trading_days
+    halt = rng.randint(max(8, min(30, n // 8)), max(9, min(60, n // 5)))  # days with no bars at all
+    k = rng.randint(n // 4, max(n // 4, n - halt - max(5, n // 6)))
+    resume = bars["date"][k + halt]
+    r = rng.choice([5, 10, 20])
+    # During the halt the company lost ~1/r of its value, exactly offsetting the reverse split:
+    # the close before the halt and the close after it are about equal.
+    bars = bars.filter((pl.col("date") < bars["date"][k]) | (pl.col("date") >= resume))
+    bars = _inject_split(bars, resume, r, 1)
+    bars = _inject_split(bars, resume, 1, r)  # the offsetting collapse (price only matters here)
+    actions = [{"symbol": symbol, "date": resume, "ratio_from": r, "ratio_to": 1,
+                "source": "price_feed", "type": "reverse_split"}]
+
+    def check(result: "GauntletResult") -> bool:
+        return result.actions.filter(pl.col("symbol") == symbol).height == 1
+
+    return PlantResult(
+        symbol, bars, actions, {}, {}, {}, "halted_reverse_split", "legitimate", check,
+        f"a real {r}:1 reverse split effective when trading resumed after a {halt}-day halt, its "
+        f"jump cancelled by the collapse during the halt -- unmeasurable, so it must be KEPT",
+    )
+
+
+def _plant_real_small_ratio_split(i: int, cfg: GauntletConfig, rng: random.Random) -> PlantResult:
+    symbol = f"TESTSMR{i:02d}"
+    base = rng.uniform(*cfg.base_price_range)
+    bars = _generate_clean_bars(cfg.n_trading_days, cfg.start_date, base, cfg.daily_vol, rng)
+    d = bars["date"][_mid_index(cfg, rng)]
+    ratio_from, ratio_to = rng.choice([(2, 3), (4, 5)])  # 3-for-2, 5-for-4
+    bars = _inject_split(bars, d, ratio_from, ratio_to)
+    actions = [{"symbol": symbol, "date": d, "ratio_from": ratio_from, "ratio_to": ratio_to,
+                "source": "price_feed", "type": "split"}]
+
+    def check(result: "GauntletResult") -> bool:
+        rows = result.actions.filter(pl.col("symbol") == symbol)
+        return rows.height == 1 and rows["date"][0] == d
+
+    return PlantResult(
+        symbol, bars, actions, {}, {}, {}, "real_small_ratio_split", "legitimate", check,
+        f"a genuine {ratio_to}-for-{ratio_from} split, correctly dated -- must be kept",
+    )
+
+
+def _plant_small_ratio_phantom(i: int, cfg: GauntletConfig, rng: random.Random) -> PlantResult:
+    symbol = f"TESTSRP{i:02d}"
+    base = rng.uniform(*cfg.base_price_range)
+    bars = _generate_clean_bars(cfg.n_trading_days, cfg.start_date, base, cfg.daily_vol, rng)  # no split
+    d = bars["date"][_mid_index(cfg, rng)]
+    actions = [{"symbol": symbol, "date": d, "ratio_from": 2, "ratio_to": 3,
+                "source": "misparsed_feed", "type": "split"}]
+
+    def check(result: "GauntletResult") -> bool:
+        # known gap: True means the phantom STILL SURVIVES (the documented limitation holds)
+        return result.actions.filter(pl.col("symbol") == symbol).height == 1
+
+    return PlantResult(
+        symbol, bars, actions, {}, {}, {}, "small_ratio_phantom", "known_gap", check,
+        "a phantom 3-for-2 split on a flat tape -- ratios under 2x are not tape-verified "
+        "(docs/STANDARD.md Known gaps #3)",
+    )
+
 _PLANTERS: list[Callable[[int, GauntletConfig, random.Random], PlantResult]] = [
     _plant_duplicate_actions,
     _plant_same_date_contradiction,
@@ -570,6 +682,10 @@ _PLANTERS: list[Callable[[int, GauntletConfig, random.Random], PlantResult]] = [
     _plant_envelope_wick,
     _plant_in_band_phantom_dip,
     _plant_bad_close_vspike,
+    _plant_serial_reverse_split,
+    _plant_halted_reverse_split,
+    _plant_real_small_ratio_split,
+    _plant_small_ratio_phantom,
 ]
 
 
