@@ -154,8 +154,56 @@ def _gap_pick(group_rows: list[dict], gap_fn, tolerance_ln: float) -> dict | Non
     return None
 
 
+def _tape_confirms(gap_fn, symbol, date, rf, rt, tolerance_ln) -> bool:
+    """True when the raw tape shows a move matching this claim's implied ratio right at its
+    own date (closes just before vs just after)."""
+    if gap_fn is None or rf <= 0 or rt <= 0:
+        return False
+    m = gap_fn(symbol, date, date)
+    if m is None or m <= 0:
+        return False
+    return abs(math.log(m) - math.log(rf / rt)) <= tolerance_ln
+
+
+def _cluster_ids(df: pl.DataFrame, config: ChainConfig, gap_fn) -> list[int]:
+    """Cluster rows (already sorted by symbol, ratio_from, ratio_to, date) into same-event
+    groups. Anchor-based, NOT consecutive-gap chaining: a row joins the current cluster only if
+    it is within ``collapse_window_days`` of the cluster's FIRST row, so 0/140/280-day rows
+    can never chain into one event. With a `gap_fn`, a cluster is further split wherever two
+    rows each carry their OWN tape-confirmed boundary more than ``near_date_window_days``
+    apart -- two real splits of the same ratio (serial reverse splits in a micro-cap) are two
+    events even when they are close together."""
+    ids, cid = [], 0
+    rows = df.select(["symbol", "ratio_from", "ratio_to", "date"]).to_dicts()
+    i = 0
+    while i < len(rows):
+        key = (rows[i]["symbol"], rows[i]["ratio_from"], rows[i]["ratio_to"])
+        start = rows[i]["date"]
+        j = i
+        while (j < len(rows) and (rows[j]["symbol"], rows[j]["ratio_from"], rows[j]["ratio_to"]) == key
+               and (rows[j]["date"] - start).days <= config.collapse_window_days):
+            j += 1
+        block = rows[i:j]
+        anchors = []  # dates of tape-confirmed distinct events inside this block
+        for r in block:
+            if _tape_confirms(gap_fn, r["symbol"], r["date"], float(r["ratio_from"]),
+                              float(r["ratio_to"]), config.gap_pick_tolerance_ln):
+                if not anchors or (r["date"] - anchors[-1]).days > config.near_date_window_days:
+                    anchors.append(r["date"])
+        if len(anchors) <= 1:
+            ids.extend([cid] * len(block))
+            cid += 1
+        else:
+            for r in block:
+                nearest = min(range(len(anchors)), key=lambda k: abs((r["date"] - anchors[k]).days))
+                ids.append(cid + nearest)
+            cid += len(anchors)
+        i = j
+    return ids
+
+
 def collapse_duplicate_actions(
-    actions: pl.DataFrame, config: ChainConfig = ChainConfig()
+    actions: pl.DataFrame, config: ChainConfig = ChainConfig(), gap_fn=None
 ) -> tuple[pl.DataFrame, dict]:
     """Collapse same-event multi-source duplicate rows within (symbol, ratio_from, ratio_to)
     groups, using consecutive-date-gap clustering (window=``config.collapse_window_days``) --
@@ -181,18 +229,7 @@ def collapse_duplicate_actions(
     has_source = "source" in actions.columns
     df = actions.sort(["symbol", "ratio_from", "ratio_to", "date"])
 
-    df = df.with_columns(
-        (pl.col("date") - pl.col("date").shift(1).over(["symbol", "ratio_from", "ratio_to"]))
-        .dt.total_days()
-        .alias("_gap_days")
-    )
-    df = df.with_columns(
-        ((pl.col("_gap_days").is_null()) | (pl.col("_gap_days") > config.collapse_window_days))
-        .cast(pl.Int32).alias("_new_cluster")
-    )
-    df = df.with_columns(
-        pl.col("_new_cluster").cum_sum().over(["symbol", "ratio_from", "ratio_to"]).alias("_cluster_id")
-    )
+    df = df.with_columns(pl.Series("_cluster_id", _cluster_ids(df, config, gap_fn), dtype=pl.Int64))
     df = df.with_columns(_rank_expr(config, has_source).alias("_source_rank"))
 
     n_input = df.height
@@ -207,7 +244,7 @@ def collapse_duplicate_actions(
     sort_desc = [False, False, False, False, False, True]
     df = df.sort(sort_cols, descending=sort_desc)
     canonical = df.group_by(_CLUSTER_KEYS).first()
-    canonical = canonical.drop(["_gap_days", "_new_cluster", "_cluster_id", "_source_rank"])
+    canonical = canonical.drop(["_cluster_id", "_source_rank"])
     canonical = canonical.sort(["symbol", "date"])
 
     stats = {
@@ -604,7 +641,7 @@ def collapse_all(
     """
     c0, s0 = drop_recorded_mislabels(actions, config=config)
     c05, s05 = drop_post_coverage_actions(c0, last_date_fn=last_date_fn)
-    c1, s1 = collapse_duplicate_actions(c05, config=config)
+    c1, s1 = collapse_duplicate_actions(c05, config=config, gap_fn=gap_fn)
     c2, s2 = collapse_same_date_conflicts(c1, config=config, gap_fn=gap_fn)
     c3, s3 = collapse_near_date_conflicts(c2, config=config, gap_fn=gap_fn)
     c35, s35 = snap_actions_to_tape(c3, config=config, series_fn=series_fn, gap_fn=gap_fn)

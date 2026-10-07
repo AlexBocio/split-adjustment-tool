@@ -349,3 +349,59 @@ def test_collapse_all_empty_input():
     empty = _actions([])
     collapsed, stats = collapse_all(empty)
     assert collapsed.height == 0
+
+
+# --- M3 regression: serial reverse splits must not be merged (specialist finding C3) ---
+def _serial_reverse_tape():
+    import datetime as _dt
+    days = [_dt.date(2024, 1, 1) + _dt.timedelta(days=i) for i in range(400)]
+    px, p = [], 1.0
+    for i in range(400):
+        if i == 100:
+            p *= 10
+        if 100 < i < 190:
+            p *= 0.975
+        if i == 190:
+            p *= 10
+        px.append(p)
+    bars = pl.DataFrame({"symbol": ["TESTSRS"] * 400, "date": days, "open": px, "high": px,
+                         "low": px, "close": px, "volume": [1000] * 400})
+    return days, bars
+
+
+def test_two_tape_confirmed_serial_reverse_splits_are_not_merged():
+    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from tapetruth.providers import InMemoryBarProvider
+    days, bars = _serial_reverse_tape()
+    acts = pl.DataFrame({"symbol": ["TESTSRS", "TESTSRS"], "date": [days[100], days[190]],
+                         "ratio_from": [10, 10], "ratio_to": [1, 1]}).with_columns(pl.col("date").cast(pl.Date))
+    sf = make_close_series_fn(InMemoryBarProvider({"TESTSRS": bars}))
+    out, _ = collapse_all(acts, gap_fn=make_gap_fn(series_fn=sf),
+                          last_date_fn=make_last_bar_date_fn(series_fn=sf), series_fn=sf)
+    assert out.height == 2
+    assert sorted(out["date"].to_list()) == [days[100], days[190]]
+
+
+def test_duplicate_rows_of_one_event_still_collapse_with_tape():
+    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from tapetruth.providers import InMemoryBarProvider
+    days, bars = _serial_reverse_tape()
+    acts = pl.DataFrame({"symbol": ["TESTSRS"] * 3, "date": [days[100], days[100], days[98]],
+                         "ratio_from": [10, 10, 10], "ratio_to": [1, 1, 1],
+                         "source": ["a", "b", "c"]}).with_columns(pl.col("date").cast(pl.Date))
+    sf = make_close_series_fn(InMemoryBarProvider({"TESTSRS": bars}))
+    out, _ = collapse_all(acts, gap_fn=make_gap_fn(series_fn=sf),
+                          last_date_fn=make_last_bar_date_fn(series_fn=sf), series_fn=sf)
+    assert out.height == 1
+    assert out["date"][0] == days[100]
+
+
+def test_anchor_clustering_does_not_chain():
+    # rows at day 0, 140, 280 (window 150): 0 and 140 may merge, 280 must stay separate
+    import datetime as _dt
+    d0 = _dt.date(2020, 1, 1)
+    acts = pl.DataFrame({"symbol": ["TESTCH"] * 3,
+                         "date": [d0, d0 + _dt.timedelta(days=140), d0 + _dt.timedelta(days=280)],
+                         "ratio_from": [1, 1, 1], "ratio_to": [2, 2, 2]}).with_columns(pl.col("date").cast(pl.Date))
+    out, _ = collapse_duplicate_actions(acts)
+    assert out.height == 2
