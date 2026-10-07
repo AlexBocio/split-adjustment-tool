@@ -43,15 +43,23 @@ def test_geometry_violation_repaired():
 
 
 def test_truth_confirmed_wick_preserved_not_deleted():
+    # A 2.2x wick that dense truth confirms is a real traded price: kept unchanged and flagged
+    # (v0.1.1; earlier versions overwrote it with the 1.8x band edge).
     df = _frame(_row("TEST4", dt.date(2022, 1, 1), 100.0, 220.0, 97.0, 100.0))
     truth = InMemoryTruthProvider({("TEST4", dt.date(2022, 1, 1)): {"high": 220.0, "low": 97.0, "n_bars": 390}})
     out = apply_bad_print_guard(df, truth=truth)
     row = out.row(0, named=True)
-    assert row["repair_source"] == "truth"
-    # clamped near the band ceiling (1.8x close), NOT collapsed all the way down to close --
-    # the old envelope-only bug would have produced high == 100.0 here.
-    assert row["high"] > 150.0
-    assert row["high"] <= 1.8 * 100.0 + 1e-9
+    assert row["high"] == 220.0
+    assert row["bad_print_flag"] == 0
+    assert row["repair_source"] == "confirmed"
+    assert row["confirmed_extreme"] == 1
+
+
+def test_truth_confirmed_3x_wick_kept_not_deleted():
+    df = _frame(_row("TEST4B", dt.date(2022, 1, 1), 100.0, 300.0, 97.0, 100.0))
+    truth = InMemoryTruthProvider({("TEST4B", dt.date(2022, 1, 1)): {"high": 300.0, "low": 97.0, "n_bars": 390}})
+    row = apply_bad_print_guard(df, truth=truth).row(0, named=True)
+    assert row["high"] == 300.0 and row["confirmed_extreme"] == 1
 
 
 def test_dense_exceed_catches_in_band_bad_low():

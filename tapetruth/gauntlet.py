@@ -478,14 +478,14 @@ def _plant_envelope_wick(i: int, cfg: GauntletConfig, rng: random.Random) -> Pla
         if row.height != 1:
             return False
         r = row.row(0, named=True)
-        # correct: repaired via the truth path, landing near the band ceiling -- NOT
-        # collapsed all the way down to close (the pre-truth-table envelope-only bug).
-        return r["repair_source"] == "truth" and r["high"] > c * 1.5
+        # correct: the real, truth-confirmed wick is KEPT unchanged and flagged -- never
+        # collapsed down to close (the envelope-only bug) nor overwritten with the band edge.
+        return abs(r["high"] - real_high) < 1e-9 and r.get("confirmed_extreme", 0) == 1
 
     return PlantResult(
         symbol, bars, [], truth, {}, {}, "envelope_wick", "legitimate", check,
         f"a real {real_high / c:.2f}x wick, confirmed by dense sub-daily coverage -- must be "
-        f"preserved (clamped to the band ceiling), never deleted down to close",
+        f"kept unchanged and flagged as a confirmed extreme, never deleted down to close",
     )
 
 

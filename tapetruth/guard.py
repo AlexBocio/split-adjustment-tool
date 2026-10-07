@@ -52,6 +52,7 @@ give the guard sub-daily data for volatile small caps.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import polars as pl
@@ -143,7 +144,9 @@ def apply_bad_print_guard(
     pl.DataFrame
         `df` with `open`/`high`/`low` repaired in place where triggered, plus two new
         columns: ``bad_print_flag`` (Int8, 1 iff ANY field was changed) and
-        ``repair_source`` (String, ``"truth"`` / ``"envelope"`` / null).
+        ``repair_source`` (String, ``"truth"`` / ``"envelope"`` / ``"confirmed"`` / null), and
+        ``confirmed_extreme`` (Int8, 1 iff an out-of-band open/high/low was KEPT because the
+        truth source confirms it traded there -- a real extreme move, flagged for review).
     """
     band_low, band_high = config.band_low, config.band_high
     tol = config.confirm_tol
@@ -208,8 +211,17 @@ def apply_bad_print_guard(
     dense_low = dense & tl_ok & (pl.col("low") < (1 - config.dense_exceed_tol) * pl.col("truth_low"))
     dense_high = dense & th_ok & (pl.col("high") > (1 + config.dense_exceed_tol) * pl.col("truth_high"))
 
-    fix_high = high_oob | geom_bad | range_bad | dense_high
-    fix_low = low_oob | geom_bad | range_bad | dense_low
+    # A wick the truth source itself CONFIRMS (truth extreme within confirm_tol of the daily
+    # value) is a real, traded price: it is FLAGGED (`confirmed_extreme`), never overwritten --
+    # writing a value known to be false and calling it "preserved" helps no consumer. Geometry
+    # violations are impossible candles and are always repaired.
+    high_confirmed = truth_present & (pl.col("truth_high") > 0) & (
+        (pl.col("high") / pl.col("truth_high")).log().abs() <= math.log(1 + tol))
+    low_confirmed = truth_present & (pl.col("truth_low") > 0) & (
+        (pl.col("low") / pl.col("truth_low")).log().abs() <= math.log(1 + tol))
+    fix_high = geom_bad | ((high_oob | range_bad | dense_high) & ~high_confirmed)
+    fix_low = geom_bad | ((low_oob | range_bad | dense_low) & ~low_confirmed)
+    confirmed_extreme = ((high_oob & high_confirmed) | (low_oob & low_confirmed)) & ~geom_bad
 
     out = out.with_columns([
         pl.when(fix_high & th_ok)
@@ -222,6 +234,7 @@ def apply_bad_print_guard(
           .otherwise(pl.col("low")).alias("_l"),
         ((fix_high & th_ok) | (fix_low & tl_ok)).alias("_by_truth"),
         ((fix_high & ~th_ok) | (fix_low & ~tl_ok)).alias("_by_env"),
+        (confirmed_extreme | pl.col("_open_confirmed")).alias("_conf"),
     ]).with_columns([
         pl.col("_o").alias("open"),
         pl.max_horizontal("_o", "_h", "close").alias("_H"),
@@ -233,10 +246,11 @@ def apply_bad_print_guard(
     ]).with_columns([
         pl.when((pl.col("bad_print_flag") == 1) & pl.col("_by_truth")).then(pl.lit("truth"))
           .when(pl.col("bad_print_flag") == 1).then(pl.lit("envelope"))
-          .when(pl.col("_open_confirmed")).then(pl.lit("confirmed"))
+          .when(pl.col("_conf")).then(pl.lit("confirmed"))
           .otherwise(pl.lit(None, dtype=pl.String)).alias("repair_source"),
         pl.col("_H").alias("high"),
         pl.col("_L").alias("low"),
-    ]).drop(["_o", "_h", "_l", "_H", "_L", "_by_truth", "_by_env", "_o0", "_open_confirmed",
+        pl.col("_conf").cast(pl.Int8).alias("confirmed_extreme"),
+    ]).drop(["_conf", "_o", "_h", "_l", "_H", "_L", "_by_truth", "_by_env", "_o0", "_open_confirmed",
              "truth_high", "truth_low", "truth_n"])
     return out
