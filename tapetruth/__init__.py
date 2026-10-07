@@ -59,6 +59,7 @@ from tapetruth.providers import (
     ParquetBarProvider,
     TruthProvider,
 )
+from tapetruth.factors import apply_split_adjustment, build_factor_table
 from tapetruth.reconcile import (
     ReconcileConfig,
     ReconciliationClass,
@@ -68,6 +69,7 @@ from tapetruth.reconcile import (
 )
 
 __all__ = [
+    "apply_split_adjustment", "build_factor_table",
     "__version__",
     # chain
     "ChainConfig", "TAPE_CONFIRMED_SOURCE", "collapse_all", "collapse_duplicate_actions",
