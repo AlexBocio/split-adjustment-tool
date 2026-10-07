@@ -37,14 +37,23 @@ jump actually is when it was misdated, and rejected when the prices show nothing
 | `split_adjustment_tool.reconcile` | **Compares two adjustment histories event by event** (yours vs a vendor's): each split is matched, `DATE_DIFFERS`, `RATIO_DIFFERS`, or only on one side. Sparse vendor tables are aligned as-of, so they compare against a daily series. |
 | `split_adjustment_tool.guard` | **Repairs bad price prints** in daily bars (a low far below the day's body, a high below its own open). With intraday data it repairs from the intraday extreme; a wild move the intraday data confirms is kept and flagged as `confirmed_extreme`, never overwritten. |
 
-**Timeframes.** Splits are checked on daily bars (a split is a once-a-day event), and the adjustment
-then applies to bars of any size — 1-hour, 5-minute, 1-minute, ticks — because a split takes effect at
-the start of its ex-date: every bar gets the factor for its own trading day. Give each intraday row a
-`date` column holding the **exchange-local trading date** (New York time for US stocks), not the UTC
-date — an 8 PM after-hours bar is already the next day in UTC and would land on the wrong side of a
-split. Verified on real hourly and 1-minute bars across a 10-for-1 split, pre-market and after-hours
-included: identical to an independently built adjusted series. The bad-print guard repairs daily bars
-only (intraday data is its witness).
+**Timeframes and time zones.** Splits are checked on daily bars (a split is a once-a-day event); the
+adjustment then applies to bars of any size — daily, 1-hour, 1-minute, ticks. A split takes effect at the
+start of its ex-date in the exchange's local time, so each row gets the factor for its exchange-local
+trading date, which the library works out for you from whatever timestamps you have:
+
+```python
+adjusted = apply_split_adjustment(minute_bars, clean, timestamp_col="ts")          # UTC, any zone, or naive
+adjusted = apply_split_adjustment(minute_bars, clean, timestamp_col="ts",
+                                  tz_by_symbol={"7203.T": "Asia/Tokyo"})            # per-exchange zones
+```
+
+Time-zone-aware timestamps are converted to the exchange zone (New York by default); naive timestamps
+are read as UTC unless you say otherwise (`naive_timestamps_tz`). An 8 PM New York after-hours bar —
+already the next day in UTC — stays on the right side of a split. Verified on real hourly and 1-minute
+bars across a 10-for-1 split, pre-market and after-hours included, with timestamps supplied as UTC, naive
+UTC and Tokyo time: identical to an independently built adjusted series in all six runs. The bad-print
+guard repairs daily bars only (intraday data is its witness).
 
 Everything is IO-agnostic: you hand it a small provider object for your bars and claims (CSV,
 Parquet and in-memory implementations included). It never opens a database or calls an API.

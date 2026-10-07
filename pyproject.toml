@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "split-adjustment-tool"
-version = "0.2.0"
+version = "0.2.1"
 description = "Verify, repair and apply stock-split adjustments against your own as-traded price tape."
 readme = "README.md"
 license = { text = "Apache-2.0" }

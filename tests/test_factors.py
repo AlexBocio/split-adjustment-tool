@@ -76,3 +76,43 @@ def test_intraday_bars_use_their_trading_date():
     assert out["price_factor"].to_list() == [0.1, 0.1, 1.0, 1.0]
     assert [round(v, 3) for v in out["adj_close"].to_list()] == [20.0, 20.02, 20.03, 20.01]
     assert out["ts"].to_list() == ts  # extra columns and row order pass through
+
+
+# --- time-zone agnostic trading dates ---
+def _utc(*a):
+    return dt.datetime(*a, tzinfo=dt.UTC)
+
+
+def _intraday(ts, sym="TESTZ"):
+    n = len(ts)
+    return pl.DataFrame({"symbol": [sym] * n, "ts": ts, "close": [200.0, 200.0, 20.0, 20.0][:n],
+                         "volume": [10] * n})
+
+
+def test_utc_timestamps_mapped_to_new_york_trading_date():
+    # 23:30 UTC Fri = 19:30 ET Fri (pre-split); 00:30 UTC Sat = 20:30 ET Fri (still pre-split, though
+    # its UTC date is Saturday); 09:00 UTC Mon = 05:00 ET Mon pre-market (post-split)
+    ts = [_utc(2023, 1, 6, 23, 30), _utc(2023, 1, 7, 0, 30), _utc(2023, 1, 9, 9, 0), _utc(2023, 1, 9, 15, 0)]
+    out = apply_split_adjustment(_intraday(ts), _acts([("TESTZ", dt.date(2023, 1, 9), 1, 10)]), timestamp_col="ts")
+    assert out["price_factor"].to_list() == [0.1, 0.1, 1.0, 1.0]
+    assert out["ts"].to_list() == ts
+
+
+def test_naive_timestamps_read_as_utc_by_default_or_as_given_zone():
+    naive = [dt.datetime(2023, 1, 9, 2, 0), dt.datetime(2023, 1, 9, 14, 0)]
+    bars = _intraday(naive)
+    acts = _acts([("TESTZ", dt.date(2023, 1, 9), 1, 10)])
+    # 02:00 UTC Mon = 21:00 ET Sun -> trading date Sunday (before the Monday ex-date)
+    assert apply_split_adjustment(bars, acts, timestamp_col="ts")["price_factor"].to_list() == [0.1, 1.0]
+    # same naive clock read as New York local time -> both on Monday
+    assert apply_split_adjustment(bars, acts, timestamp_col="ts",
+                                  naive_timestamps_tz="America/New_York")["price_factor"].to_list() == [1.0, 1.0]
+
+
+def test_per_symbol_exchange_zone():
+    # 23:30 UTC Sun = 08:30 Mon in Tokyo (post-split there) but 18:30 Sun in New York (pre-split)
+    t = _utc(2023, 1, 8, 23, 30)
+    bars = pl.concat([_intraday([t], "TESTJP"), _intraday([t], "TESTUS")])
+    acts = _acts([("TESTJP", dt.date(2023, 1, 9), 1, 10), ("TESTUS", dt.date(2023, 1, 9), 1, 10)])
+    out = apply_split_adjustment(bars, acts, timestamp_col="ts", tz_by_symbol={"TESTJP": "Asia/Tokyo"})
+    assert dict(zip(out["symbol"].to_list(), out["price_factor"].to_list(), strict=True)) == {"TESTJP": 1.0, "TESTUS": 0.1}

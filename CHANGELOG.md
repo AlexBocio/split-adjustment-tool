@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 — 2026-10-07
+
+### Added
+- `apply_split_adjustment` is time-zone agnostic: `timestamp_col=` accepts UTC, any zone or naive
+  timestamps and derives each row's exchange-local trading date (`exchange_tz`, default New York;
+  `tz_by_symbol` per-symbol overrides; `naive_timestamps_tz`, default UTC). A Datetime-typed `date`
+  column is handled the same way; a Date-typed `date` is used as is. Your own columns are untouched.
+- Intraday use documented and tested (1-hour and 1-minute bars, after-hours and pre-market).
+
 ## 0.2.0 — 2026-10-07
 
 Renamed from `tapetruth` to **split-adjustment-tool** (package `split_adjustment_tool`).

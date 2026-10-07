@@ -69,16 +69,63 @@ def build_factor_table(actions: pl.DataFrame, start_date=None) -> pl.DataFrame:
     return df.with_columns((1.0 / pl.col("price_factor")).alias("volume_factor"))
 
 
-def apply_split_adjustment(bars: pl.DataFrame, actions: pl.DataFrame) -> pl.DataFrame:
+def _trading_date(bars: pl.DataFrame, timestamp_col: str | None, exchange_tz: str,
+                  tz_by_symbol: dict[str, str] | None, naive_tz: str) -> pl.Expr:
+    """Expression giving each row's exchange-local TRADING DATE, whatever the input time zone.
+
+    * `timestamp_col` (or a Datetime-typed ``date`` column) is converted to the symbol's exchange
+      time zone and truncated to a date. Naive timestamps are first interpreted as `naive_tz`.
+    * A Date-typed ``date`` column is taken as already being the trading date.
+    """
+    col = timestamp_col if timestamp_col is not None else "date"
+    dtype = bars.schema[col]
+    if not isinstance(dtype, pl.Datetime):
+        return pl.col(col).cast(pl.Date)
+    ts = pl.col(col)
+    if dtype.time_zone is None:
+        ts = ts.dt.replace_time_zone(naive_tz)
+    zones = {exchange_tz}
+    if tz_by_symbol:
+        zones |= set(tz_by_symbol.values())
+    if len(zones) == 1:
+        return ts.dt.convert_time_zone(exchange_tz).dt.replace_time_zone(None).dt.date()
+    zone_of = pl.col("symbol").replace_strict(tz_by_symbol or {}, default=exchange_tz, return_dtype=pl.String)
+    expr = None
+    for z in sorted(zones):
+        part = ts.dt.convert_time_zone(z).dt.replace_time_zone(None).dt.date()
+        expr = pl.when(zone_of == z).then(part) if expr is None else expr.when(zone_of == z).then(part)
+    return expr.otherwise(None)
+
+
+def apply_split_adjustment(
+    bars: pl.DataFrame,
+    actions: pl.DataFrame,
+    *,
+    timestamp_col: str | None = None,
+    exchange_tz: str = "America/New_York",
+    tz_by_symbol: dict[str, str] | None = None,
+    naive_timestamps_tz: str = "UTC",
+) -> pl.DataFrame:
     """Add ``price_factor``, ``volume_factor`` and ``adj_open/adj_high/adj_low/adj_close``
     (+ ``adj_volume`` when a ``volume`` column exists) to `bars`.
 
-    `bars` needs ``symbol, date`` and any of ``open/high/low/close`` (raw, as traded); all other
-    columns pass through. `actions` should already be cleaned by
-    :func:`split_adjustment_tool.chain.collapse_all`. Symbols with no actions get factor 1.
+    Works on any timeframe and any time zone. A split takes effect at the start of its ex-date in
+    the EXCHANGE's local time, so each row is matched by its exchange-local trading date:
+
+    * daily bars: a Date-typed ``date`` column is used as is;
+    * intraday bars: pass ``timestamp_col`` (or give ``date`` a Datetime type). Time-zone-aware
+      timestamps are converted to the exchange zone; naive ones are read as ``naive_timestamps_tz``
+      (UTC by default) first. ``exchange_tz`` defaults to New York; ``tz_by_symbol`` overrides it
+      per symbol (e.g. ``{"VOD.L": "Europe/London"}``).
+
+    `bars` needs ``symbol`` and any of ``open/high/low/close`` (raw, as traded); every other column,
+    including your own ``date``/timestamp, passes through unchanged. `actions` should already be
+    cleaned by :func:`split_adjustment_tool.chain.collapse_all`. Symbols with no actions get factor 1.
     """
     ev = _implied(actions)
-    b = bars.with_columns(pl.col("date").cast(pl.Date)).with_row_index("_ri")
+    b = bars.with_columns(
+        _trading_date(bars, timestamp_col, exchange_tz, tz_by_symbol, naive_timestamps_tz).alias("_tdate")
+    ).with_row_index("_ri")
     if ev.height == 0:
         f = b.with_columns(pl.lit(1.0).alias("price_factor"))
     else:
@@ -90,9 +137,9 @@ def apply_split_adjustment(bars: pl.DataFrame, actions: pl.DataFrame) -> pl.Data
         totals = ev.group_by("symbol").agg(pl.col("m").product().alias("total"))
         # for bar date d, take the LAST event with ex-date <= d: its `after` is the answer;
         # dates before the first event take the symbol's total.
-        j = b.sort("symbol", "date").join_asof(
-            ev.select("symbol", "date", "after").sort("symbol", "date"),
-            on="date", by="symbol", strategy="backward", check_sortedness=False,
+        j = b.sort("symbol", "_tdate").join_asof(
+            ev.select("symbol", pl.col("date").alias("_tdate"), "after").sort("symbol", "_tdate"),
+            on="_tdate", by="symbol", strategy="backward", check_sortedness=False,
         ).join(totals, on="symbol", how="left")
         f = j.with_columns(
             pl.when(pl.col("after").is_not_null()).then(pl.col("after"))
@@ -103,4 +150,4 @@ def apply_split_adjustment(bars: pl.DataFrame, actions: pl.DataFrame) -> pl.Data
     adds = [(pl.col(c) * pl.col("price_factor")).alias(f"adj_{c}") for c in _PRICE_COLS if c in f.columns]
     if "volume" in f.columns:
         adds.append((pl.col("volume") * pl.col("volume_factor")).alias("adj_volume"))
-    return f.with_columns(adds).sort("_ri").drop("_ri")
+    return f.with_columns(adds).sort("_ri").drop("_ri", "_tdate")
