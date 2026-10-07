@@ -21,8 +21,14 @@ Full method: ``docs/STANDARD.md``. Full API: see each module's docstring
 """
 from __future__ import annotations
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
+from split_adjustment_tool.breaks import (
+    BreakConfig,
+    check_claims_against_witness,
+    classify_jumps,
+    scan_unexplained_jumps,
+)
 from split_adjustment_tool.chain import (
     TAPE_CONFIRMED_SOURCE,
     ChainConfig,
@@ -69,6 +75,7 @@ from split_adjustment_tool.reconcile import (
 )
 
 __all__ = [
+    "BreakConfig", "scan_unexplained_jumps", "classify_jumps", "check_claims_against_witness",
     "apply_split_adjustment", "build_factor_table",
     "__version__",
     # chain

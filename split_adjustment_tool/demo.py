@@ -91,6 +91,16 @@ def main() -> int:
 
     print()
     print("=" * 72)
+    print("PROVIDER BREAKS  (the tape itself goes wrong; an independent witness decides)")
+    print("=" * 72)
+    from split_adjustment_tool.gauntlet import run_break_benchmark
+    breaks = run_break_benchmark()
+    for name, (ok, n) in breaks.items():
+        print(f"  {name:<26} [{_bar(ok / n)}] {ok / n * 100:5.1f}%  ({ok}/{n})")
+    breaks_ok = all(ok / n >= _LEGIT_CLASS_FLOOR for ok, n in breaks.values())
+
+    print()
+    print("=" * 72)
     print("VINTAGE-AWARENESS  (what the hook actually buys you)")
     print("=" * 72)
     vdemo = demonstrate_vintage_awareness(universe)
@@ -105,7 +115,7 @@ def main() -> int:
     legit_ok = worst_legit is None or worst_legit.rate >= _LEGIT_CLASS_FLOOR
     passed = (scorecard.overall_detection_rate >= _DETECTION_FLOOR
              and scorecard.clean_false_positive_rate <= _FALSE_POSITIVE_CEILING
-             and legit_ok)
+             and legit_ok and breaks_ok)
     print()
     print("=" * 72)
     print(f"RESULT: {'PASS' if passed else 'FAIL'}  "
@@ -117,7 +127,8 @@ def main() -> int:
           f"{_FALSE_POSITIVE_CEILING * 100:.0f}%, "
           f"worst legitimate class {worst_legit.defect_class if worst_legit else '-'} "
           f"{(worst_legit.rate if worst_legit else 1.0) * 100:.1f}% "
-          f"{'>=' if legit_ok else '<'} {_LEGIT_CLASS_FLOOR * 100:.0f}%)")
+          f"{'>=' if legit_ok else '<'} {_LEGIT_CLASS_FLOOR * 100:.0f}%, "
+          f"provider-break classes {'all' if breaks_ok else 'NOT all'} >= {_LEGIT_CLASS_FLOOR * 100:.0f}%)")
     print("=" * 72)
     print(f"\nTotal time: {time.time() - t0:.1f}s. Full method: docs/STANDARD.md")
     return 0 if passed else 1

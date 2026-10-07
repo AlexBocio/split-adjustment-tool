@@ -35,6 +35,7 @@ jump actually is when it was misdated, and rejected when the prices show nothing
 | `split_adjustment_tool.chain` | **Cleans split claims.** Collapses duplicates from several sources (but never merges two real splits that each show up in the prices), resolves same-day and near-day contradictions by the measured price jump, drops claims after your data ends, moves misdated claims to the real jump, and rejects lone phantoms on a flat tape. Claims across a trading halt are kept and flagged as unmeasurable, never rejected. |
 | `split_adjustment_tool.factors` | **Applies them.** `apply_split_adjustment(bars, actions)` adds a cumulative price factor and volume factor (CRSP-style: anchored at the latest bar, effective from each ex-date) and `adj_open/high/low/close` + `adj_volume`; dollar volume is unchanged by construction. `build_factor_table` gives the sparse one-row-per-event form. |
 | `split_adjustment_tool.reconcile` | **Compares two adjustment histories event by event** (yours vs a vendor's): each split is matched, `DATE_DIFFERS`, `RATIO_DIFFERS`, or only on one side. Sparse vendor tables are aligned as-of, so they compare against a daily series. |
+| `split_adjustment_tool.breaks` | **Catches the price feed itself going wrong.** Finds lasting jumps no claim explains (judged against each stock's own normal moves) and asks an independent *witness* series (a second vendor, or daily closes built from your own intraday tape) what happened: `PROVIDER_BREAK` (the feed is wrong from that day, with the day it was fixed if it was), `REAL_MOVE` (real: a split your claims missed, or a genuine crash), or `UNEXPLAINED` when there is no witness. It also rejects a bogus claim that only the broken feed "confirms". |
 | `split_adjustment_tool.guard` | **Repairs bad price prints** in daily bars (a low far below the day's body, a high below its own open). With intraday data it repairs from the intraday extreme; a wild move the intraday data confirms is kept and flagged as `confirmed_extreme`, never overwritten. |
 
 **Timeframes and time zones.** Splits are checked on daily bars (a split is a once-a-day event); the
@@ -104,6 +105,27 @@ reverse splits in 2026, about 3 years of daily bars each):
   a real decimal-slip low (69.005 on a ~$690 day), repaired to 681.94 — and caught two documented
   historical bad prints; three real crash days were kept and flagged, not flattened.
 
+## When the provider itself is wrong
+
+Everything above treats your price tape as the evidence. If a vendor delivers good prices until day X and
+then, from the next day, prices on the wrong basis (10x off, a split applied early or never applied),
+nothing in the claims can catch it — and a bogus claim on that day would even look confirmed. Give the
+library a second, independent price series and it will tell you:
+
+```python
+from split_adjustment_tool import scan_unexplained_jumps, classify_jumps, check_claims_against_witness
+jumps = classify_jumps(scan_unexplained_jumps(primary_series_fn, symbols, clean), witness_series_fn)
+clean, wstats = check_claims_against_witness(clean, witness_series_fn)   # drops claims only the bad feed shows
+```
+
+Checked against a real incident: a free data feed delivered 220 daily bars across 94 stocks on the wrong
+split basis (August–September 2026), and the bad copies were kept. With daily closes built from the
+same stocks' 1-minute tape as the witness, **91 of the 104 bad windows were flagged `PROVIDER_BREAK` on
+their exact first day, with zero provider-break flags on good days**; on clean data (9 stocks, 6,369
+bars) it raised no provider breaks at all and listed 9 `REAL_MOVE`s for review (genuine crashes, and one
+reverse split missing from the claim list). Without a witness a provider break and a real one-day crash
+look identical — both are reported `UNEXPLAINED`, never acted on.
+
 ## The benchmark
 
 `python -m split_adjustment_tool.demo` builds a synthetic universe (no real tickers, no licensed
@@ -125,12 +147,13 @@ proof on its own — the real-data numbers above are the evidence.
   prices; give it one history per security.
 - **Without intraday data, the bad-print guard cannot tell a real one-day crash from a bad print**
   on a volatile small stock. Give it intraday data for small caps.
-- **An isolated bad close that snaps back the next day is not caught** (tracked in the benchmark).
+- **An isolated bad close that snaps back the next day** is caught only with a witness series (the
+  `breaks` module reports it as a one-day window); without one it is not.
 - Full method, rules and known gaps: [`docs/STANDARD.md`](docs/STANDARD.md).
 
 ## Status
 
-**v0.2.0 (alpha).** For educational and research use — see [`DISCLAIMER.md`](DISCLAIMER.md) (AS-IS,
+**v0.3.0 (alpha).** For educational and research use — see [`DISCLAIMER.md`](DISCLAIMER.md) (AS-IS,
 no warranty, not investment advice). [Apache 2.0](LICENSE). It ships code and a synthetic benchmark;
 it does not ship, sell or redistribute any market data — you bring your own bars and claims.
 Changes: [`CHANGELOG.md`](CHANGELOG.md).

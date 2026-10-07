@@ -877,3 +877,78 @@ def demonstrate_vintage_awareness(universe: GauntletUniverse) -> dict:
         "survived_without_vintage_awareness": without.height,
         "survived_with_vintage_awareness": with_vintage.height,
     }
+
+
+# ---------------------------------------------------------------------------------------
+# Provider-break benchmark (v0.3): the tape itself goes wrong; an independent witness decides.
+# ---------------------------------------------------------------------------------------
+
+
+def run_break_benchmark(n: int = 20, seed: int = 2026, n_days: int = 252) -> dict:
+    """Plant provider breaks (and look-alikes) in synthetic series with a clean WITNESS copy, run
+    :mod:`split_adjustment_tool.breaks`, and score each class. Returns ``{class: (correct, n)}``."""
+    from split_adjustment_tool.breaks import (
+        PROVIDER_BREAK,
+        REAL_MOVE,
+        check_claims_against_witness,
+        classify_jumps,
+        scan_unexplained_jumps,
+    )
+
+    rng = random.Random(seed)
+    start = dt.date(2022, 1, 3)
+    scores: dict[str, list[int]] = {}
+
+    def series(bars):
+        return bars.select("date", "close")
+
+    def score(name, ok):
+        s = scores.setdefault(name, [0, 0])
+        s[0] += int(bool(ok))
+        s[1] += 1
+
+    for _ in range(n):
+        base = rng.uniform(1.0, 200.0)
+        true = _generate_clean_bars(n_days, start, base, 0.03, rng)
+        dates = true["date"].to_list()
+        x = rng.randint(n_days // 3, 2 * n_days // 3)
+        m = rng.choice([2, 5, 8, 10, 20, 100]) ** rng.choice([1, -1])
+        witness = {"TESTW": series(true)}
+
+        def run(primary_bars, claims=None, _w=witness):
+            prim = {"TESTW": series(primary_bars)}
+            j = scan_unexplained_jumps(prim.get, ["TESTW"], claims)
+            return classify_jumps(j, _w.get)
+
+        def mult(bars, lo, hi, k):
+            return bars.with_columns(pl.when((pl.col("date") >= lo) & (pl.col("date") < hi))
+                                       .then(pl.col("close") * k).otherwise(pl.col("close")).alias("close"))
+
+        far = dates[-1] + dt.timedelta(days=1)
+        # 1. wrong basis from day X onward, never fixed
+        c = run(mult(true, dates[x], far, m))
+        score("break_from_day_x", c.filter((pl.col("date") == dates[x])
+                                           & (pl.col("classification") == PROVIDER_BREAK)).height == 1)
+        # 2. wrong basis for a window X..Y, then fixed
+        y = x + rng.randint(5, 40)
+        c = run(mult(true, dates[x], dates[y], m))
+        hit = c.filter((pl.col("date") == dates[x]) & (pl.col("classification") == PROVIDER_BREAK))
+        score("break_window_x_to_y", hit.height == 1 and hit["reverted_on"][0] == dates[y])
+        # 3. a single day on the wrong basis
+        c = run(mult(true, dates[x], dates[x + 1], m))
+        hit = c.filter((pl.col("date") == dates[x]) & (pl.col("classification") == PROVIDER_BREAK))
+        score("break_one_day", hit.height == 1 and hit["reverted_on"][0] == dates[x + 1])
+        # 4. a bogus split claim lined up with a break: the witness must reject it
+        claims = pl.DataFrame({"symbol": ["TESTW"], "date": [dates[x]],
+                               "ratio_from": [int(round(m)) if m >= 1 else 1],
+                               "ratio_to": [1 if m >= 1 else int(round(1 / m))]})
+        kept, _ = check_claims_against_witness(claims, witness.get)
+        score("bogus_claim_on_break", kept.height == 0)
+        # 5. a real split missing from the claims: surfaced as REAL_MOVE, never as a provider break
+        real = mult(true, dates[x], far, m)
+        c = run(real, _w={"TESTW": series(real)})
+        score("unclaimed_real_split", c.filter((pl.col("date") == dates[x])
+                                               & (pl.col("classification") == REAL_MOVE)).height == 1)
+        # 6. legitimate: clean volatile series -> no provider break anywhere
+        score("clean_no_false_break", run(true).filter(pl.col("classification") == PROVIDER_BREAK).height == 0)
+    return {k: (v[0], v[1]) for k, v in scores.items()}

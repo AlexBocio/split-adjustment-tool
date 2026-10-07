@@ -131,7 +131,9 @@ your own tape and public records — never on continued access to someone else's
 Tracked honestly, not hidden — a standard that hides its own limitations isn't one you can
 trust:
 
-1. **Isolated bad-close prints are not currently caught.** The bad-print guard validates
+1. **Isolated bad-close prints are caught only with a witness.** (v0.3: `breaks.scan_unexplained_jumps`
+   reports a whole bar off by a large factor and back the next bar as a one-day window, and
+   `classify_jumps` calls it a provider break when an independent series disagrees.) Without a witness: The bad-print guard validates
    open/high/low *against* the close of the same row, but trusts the close itself. An
    isolated, internally-self-consistent bad close (the whole candle moves together, so
    geometry checks can't distinguish it from a real move) with a full next-day reversal
