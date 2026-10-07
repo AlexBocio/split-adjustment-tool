@@ -23,6 +23,12 @@ filing, a text-extraction pipeline) are *claims*. A claim is applied only where 
 as-traded price series — immune to adjustment-factor bugs by construction — confirms it:
 the right ratio, at the right date, with next-bar persistence. Claims the tape contradicts
 are refuted; claims the tape locates elsewhere are snapped to where the tape actually moves.
+**Scope of the tape check (stated plainly):** only claims implying at least a 2x move
+(`ChainConfig.large_ratio_threshold_ln`) are snapped or refuted. Smaller ratios -- 3-for-2,
+5-for-4, stock dividends -- are de-duplicated but otherwise passed through as claimed, because an
+ordinary day's move can mimic them. Across a hole in the tape longer than
+`ChainConfig.max_gap_calendar_days` (a halt, an outage) a claim is unmeasurable: it is kept and
+reported, never refuted.
 
 **D2 — Append-only records, view-level corrections.** The underlying records are never
 mutated in place. Every fix (de-duplication, date-snapping, refutation, exclusion) happens
@@ -137,7 +143,20 @@ trust:
    specific tolerance values are empirically chosen, not theoretically proven optimal —
    they are exposed as `GuardConfig`/`ChainConfig` fields precisely so you can retune them
    against your own data's characteristics.
-3. **Absence/coverage monitoring (rules 11–12) is out of this engine's scope.** tapetruth
+3. **Small ratios are not tape-verified.** See D1: claims implying less than a 2x move are
+   de-duplicated but neither snapped nor refuted, so a phantom 3-for-2 on a flat tape survives.
+4. **Spin-offs, special dividends and rights are not distinguished from splits by the tape.**
+   A spin-off's value separation looks like a split of the same ratio. The only exclusion is a
+   cited public record (`ChainConfig.recorded_mislabels`), and no distribution price factor is
+   computed -- `tapetruth.factors` adjusts for splits and reverse splits only.
+5. **Everything is keyed on the symbol string.** There is no permanent security identifier, so a
+   reused ticker can attach one company's actions to another company's tape. Feed one symbol
+   history per security.
+6. **The built-in gauntlet grades the engine on its own synthetic generator.** Two classes are
+   handed their answer key (`spinoff_mislabel` via `recorded_mislabels`, `mixed_vintage_ohl`
+   via `vintage_fn`) and are reported as *configured*, not detected. Treat the gauntlet as a
+   regression suite; real-data validation is reported separately in the README.
+7. **Absence/coverage monitoring (rules 11–12) is out of this engine's scope.** tapetruth
    verifies data you already have; it does not watch an ingestion pipeline for silent gaps
    or enforce atomic writes. Those remain your pipeline's responsibility.
 
