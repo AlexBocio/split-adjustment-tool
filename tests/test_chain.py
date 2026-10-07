@@ -405,3 +405,41 @@ def test_anchor_clustering_does_not_chain():
                          "ratio_from": [1, 1, 1], "ratio_to": [2, 2, 2]}).with_columns(pl.col("date").cast(pl.Date))
     out, _ = collapse_duplicate_actions(acts)
     assert out.height == 2
+
+
+# --- M4 regression: a real reverse split after a long halt must not be refuted (C4) ---
+def test_reverse_split_after_halt_with_offsetting_drift_is_kept_and_flagged():
+    import datetime as _dt
+    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from tapetruth.providers import InMemoryBarProvider
+    start = _dt.date(2024, 1, 1)
+    days = [start + _dt.timedelta(days=i) for i in range(100)]          # trades at 1.00
+    resume = start + _dt.timedelta(days=160)                            # 60-day halt
+    days += [resume + _dt.timedelta(days=i) for i in range(100)]        # trades at 1.00 again
+    px = [1.0] * 200   # 1:10 reverse split during the halt, offset exactly by a 90% collapse
+    bars = pl.DataFrame({"symbol": ["TESTHALT"] * 200, "date": days, "open": px, "high": px,
+                         "low": px, "close": px, "volume": [1000] * 200})
+    acts = pl.DataFrame({"symbol": ["TESTHALT"], "date": [resume], "ratio_from": [10],
+                         "ratio_to": [1]}).with_columns(pl.col("date").cast(pl.Date))
+    sf = make_close_series_fn(InMemoryBarProvider({"TESTHALT": bars}))
+    out, st = collapse_all(acts, gap_fn=make_gap_fn(series_fn=sf),
+                           last_date_fn=make_last_bar_date_fn(series_fn=sf), series_fn=sf)
+    assert out.height == 1
+    assert st["phantom"]["n_refuted"] == 0
+    assert st["phantom"]["n_unmeasurable_kept"] == 1
+
+
+def test_phantom_on_continuous_tape_still_refuted():
+    import datetime as _dt
+    from tapetruth import collapse_all, make_close_series_fn, make_gap_fn, make_last_bar_date_fn
+    from tapetruth.providers import InMemoryBarProvider
+    days = [_dt.date(2024, 1, 1) + _dt.timedelta(days=i) for i in range(200)]
+    px = [50.0] * 200
+    bars = pl.DataFrame({"symbol": ["TESTPH"] * 200, "date": days, "open": px, "high": px,
+                         "low": px, "close": px, "volume": [1000] * 200})
+    acts = pl.DataFrame({"symbol": ["TESTPH"], "date": [days[120]], "ratio_from": [1],
+                         "ratio_to": [4]}).with_columns(pl.col("date").cast(pl.Date))
+    sf = make_close_series_fn(InMemoryBarProvider({"TESTPH": bars}))
+    out, st = collapse_all(acts, gap_fn=make_gap_fn(series_fn=sf),
+                           last_date_fn=make_last_bar_date_fn(series_fn=sf), series_fn=sf)
+    assert out.height == 0 and st["phantom"]["n_refuted"] == 1

@@ -105,6 +105,13 @@ class ChainConfig:
     phantom_flat_tolerance_ln: float = math.log(1.2)
     phantom_disagreement_tolerance_ln: float = math.log(2.0)
 
+    #: A price gap is only MEASURABLE when the nearest bars on each side of a claim are within
+    #: this many calendar days of it. Across a longer hole (a trading halt, a data outage) the
+    #: closes on either side are separated by unknown drift, so the move cannot be attributed
+    #: to the claim: the gap is reported as unmeasurable and the claim is KEPT, never refuted.
+    #: (CRSP likewise sets adjusted values to missing across a trading gap rather than guess.)
+    max_gap_calendar_days: int = 10
+
     #: ``(symbol, date-ISO-string, ratio_from, ratio_to) -> citation``. Publicly-recorded
     #: events (a spin-off, say) that a vendor mislabeled as a split -- the tape CANNOT
     #: distinguish these from a real split of the claimed ratio (the price genuinely moved
@@ -405,7 +412,7 @@ def make_close_series_fn(bars) -> Callable[[str], pl.DataFrame | None]:
     return series_fn
 
 
-def make_gap_fn(bars=None, series_fn=None) -> Callable:
+def make_gap_fn(bars=None, series_fn=None, max_gap_calendar_days: int | None = None) -> Callable:
     """Builds a `gap_fn` measuring the raw price gap across a claim's date range:
     ``(median close of up to 3 trading days AFTER last_date) / (median close of up to 3
     trading days STRICTLY BEFORE first_date)``. Medians damp single-day noise. Pass
@@ -414,15 +421,22 @@ def make_gap_fn(bars=None, series_fn=None) -> Callable:
     already have one. Returns `None` (rather than guessing) for symbols/dates without
     coverage."""
     _series = series_fn if series_fn is not None else make_close_series_fn(bars)
+    limit = max_gap_calendar_days if max_gap_calendar_days is not None else ChainConfig().max_gap_calendar_days
 
     def gap_fn(symbol: str, first_date, last_date):
         s = _series(symbol)
         if s is None or s.height == 0:
             return None
-        before = s.filter(pl.col("date") < first_date).tail(3)["close"]
-        after = s.filter(pl.col("date") > last_date).head(3)["close"]
-        if len(before) == 0 or len(after) == 0:
+        bdf = s.filter(pl.col("date") < first_date).tail(3)
+        adf = s.filter(pl.col("date") > last_date).head(3)
+        if bdf.height == 0 or adf.height == 0:
             return None
+        # Unmeasurable across a hole (halt / outage): drift on the far side of the hole would
+        # be mistaken for (or would cancel) the event's own move.
+        if ((first_date - bdf["date"][-1]).days > limit
+                or (adf["date"][0] - last_date).days > limit):
+            return None
+        before, after = bdf["close"], adf["close"]
         b, a = float(before.median()), float(after.median())
         if b <= 0 or a <= 0:
             return None
@@ -523,10 +537,11 @@ def refute_phantom_actions(
 
     Refuted rows are returned in ``stats["refuted"]`` for logging / rebuild-targeting.
     """
-    stats = {"n_input_rows": actions.height, "n_refuted": 0, "refuted": []}
+    stats = {"n_input_rows": actions.height, "n_refuted": 0, "refuted": [],
+             "n_unmeasurable_kept": 0, "unmeasurable_kept": []}
     if gap_fn is None or actions.height == 0:
         return actions, stats
-    keep_idx, refuted = [], []
+    keep_idx, refuted, unmeasurable = [], [], []
     for i, r in enumerate(actions.iter_rows(named=True)):
         rf, rt = float(r["ratio_from"]), float(r["ratio_to"])
         if rf <= 0 or rt <= 0:
@@ -538,6 +553,8 @@ def refute_phantom_actions(
             keep_idx.append(i); continue
         m = gap_fn(r["symbol"], r["date"], r["date"])
         if m is None or m <= 0:
+            # absence of evidence keeps the action -- logged so callers can flag it
+            unmeasurable.append({k: r[k] for k in ("symbol", "date", "ratio_from", "ratio_to")})
             keep_idx.append(i); continue
         lm = math.log(m)
         if (abs(lm) < config.phantom_flat_tolerance_ln
@@ -547,7 +564,8 @@ def refute_phantom_actions(
         else:
             keep_idx.append(i)
     out = actions.with_row_index("_ri").filter(pl.col("_ri").is_in(keep_idx)).drop("_ri")
-    stats.update({"n_refuted": len(refuted), "refuted": refuted})
+    stats.update({"n_refuted": len(refuted), "refuted": refuted,
+                  "n_unmeasurable_kept": len(unmeasurable), "unmeasurable_kept": unmeasurable})
     return out, stats
 
 
