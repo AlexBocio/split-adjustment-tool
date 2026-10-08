@@ -39,6 +39,7 @@ __all__ = [
     "drop_post_coverage_actions",
     "drop_recorded_mislabels",
     "collapse_all",
+    "compose_same_day_legs",
     "make_close_series_fn",
     "make_gap_fn",
     "make_last_bar_date_fn",
@@ -117,10 +118,92 @@ class ChainConfig:
     #: distinguish these from a real split of the claimed ratio (the price genuinely moved
     #: by that amount), so exclusion requires a cited public record, never a tape
     #: measurement. Empty by default; supply your own researched findings.
-    recorded_mislabels: dict[tuple[str, str, int, int], str] = field(default_factory=dict)
+    recorded_mislabels: dict[tuple[str, str, float, float], str] = field(default_factory=dict)
+
+    #: Two or more rows on the SAME (symbol, date) from the SAME source with different ratios, at least
+    #: one reverse (price up) and one forward (price down), are LEGS of one composite event (an odd-lot
+    #: cash-out files a 1-for-1000 reverse and a 1000-for-1 forward split on one day) and are multiplied
+    #: into one row. Same-direction ratios are never legs. Composing is skipped when a measurable tape gap
+    #: contradicts the composite while matching one leg, in which case the rows are left for
+    #: :func:`collapse_same_date_conflicts` to resolve as a conflict. Rows from DIFFERENT sources on
+    #: the same day are always competing claims, never legs.
+    compose_same_source_legs: bool = True
 
 
 _CLUSTER_KEYS = ["symbol", "ratio_from", "ratio_to", "_cluster_id"]
+
+
+def _ratio_key(x) -> float:
+    """Normalise a ratio for equality tests: 1, 1.0 and 1.00 are the same ratio; 1.0526 is not 1.
+    Rounded to 12 significant decimals so values that arrive through text and binary agree."""
+    return round(float(x), 12)
+
+
+def compose_same_day_legs(
+    actions: pl.DataFrame, config: ChainConfig = ChainConfig(), gap_fn=None
+) -> tuple[pl.DataFrame, dict]:
+    """Multiply same-source, same-day legs into ONE composite event (see
+    :attr:`ChainConfig.compose_same_source_legs`). The composite's ratio is the exact product of the
+    legs (``ratio_from`` = product of the froms, ``ratio_to`` = product of the tos), so a 1-for-1000
+    reverse plus a 1000-for-1 forward nets to a no-op instead of leaving a 1000x factor behind.
+
+    The tape decides when it can: with a ``gap_fn``, a group is composed only when the measured gap
+    agrees with the composite (within ``gap_pick_tolerance_ln``) or cannot be measured. A gap that
+    matches a single leg instead means the source double-logged one event with two ratios -- that
+    group is left unchanged for :func:`collapse_same_date_conflicts`.
+    """
+    stats = {"n_input_rows": actions.height, "n_composed_groups": 0, "n_left_as_conflict": 0, "composed": []}
+    if (actions.height == 0 or not config.compose_same_source_legs or "source" not in actions.columns):
+        stats["n_output_rows"] = actions.height
+        return actions, stats
+    df = actions.with_row_index("_ri")
+    groups = (df.filter(pl.col("source").is_not_null() & (pl.col("ratio_from") != pl.col("ratio_to")))
+                .group_by(["symbol", "date", "source"])
+                .agg(pl.col("_ri"), pl.col("ratio_from"), pl.col("ratio_to"))
+                .filter(pl.col("_ri").list.len() > 1))
+    drop, add = set(), []
+    for g in groups.iter_rows(named=True):
+        legs = sorted(set(zip(map(_ratio_key, g["ratio_from"]), map(_ratio_key, g["ratio_to"]), strict=True)))
+        if len(legs) < 2:
+            continue                       # the same ratio twice: a duplicate, not legs
+        ms = [float(f) / float(t) for f, t in zip(g["ratio_from"], g["ratio_to"], strict=True)]
+        if not (any(m > 1 for m in ms) and any(m < 1 for m in ms)):
+            # a real composite is a reverse AND a forward leg (odd-lot cash-out). Two same-direction ratios from
+            # one source on one day are competing claims (an announcement quoting an approved range next to the
+            # final ratio), never legs: 10:1 x 750:1 would fabricate a 7,500:1 split.
+            stats["n_left_as_conflict"] += 1
+            continue
+        rf = rt = 1.0
+        for f, t in zip(g["ratio_from"], g["ratio_to"], strict=True):
+            rf *= float(f)
+            rt *= float(t)
+        if gap_fn is not None:
+            m = gap_fn(g["symbol"], g["date"], g["date"])
+            if m is not None and m > 0:
+                tol = config.gap_pick_tolerance_ln
+                comp_err = abs(math.log(m) - math.log(rf / rt))
+                leg_errs = [abs(math.log(m) - math.log(float(f) / float(t)))
+                            for f, t in zip(g["ratio_from"], g["ratio_to"], strict=True)]
+                if comp_err > tol and min(leg_errs) <= tol:
+                    stats["n_left_as_conflict"] += 1
+                    continue
+        first = df.filter(pl.col("_ri") == g["_ri"][0]).drop("_ri")
+        row = first.with_columns(pl.lit(rf).cast(first.schema["ratio_from"]).alias("ratio_from"),
+                                 pl.lit(rt).cast(first.schema["ratio_to"]).alias("ratio_to"))
+        if "type" in row.columns:
+            row = row.with_columns(pl.lit("composite").cast(row.schema["type"]).alias("type"))
+        drop.update(g["_ri"])
+        add.append(row)
+        stats["n_composed_groups"] += 1
+        stats["composed"].append({"symbol": g["symbol"], "date": g["date"], "source": g["source"],
+                                  "legs": list(zip(g["ratio_from"], g["ratio_to"], strict=True)), "ratio": (rf, rt)})
+    if not add:
+        stats["n_output_rows"] = actions.height
+        return actions, stats
+    out = pl.concat([df.filter(~pl.col("_ri").is_in(list(drop))).drop("_ri"), *add], how="vertical_relaxed")
+    out = out.sort(["symbol", "date"])
+    stats["n_output_rows"] = out.height
+    return out, stats
 
 
 def _rank_expr(config: ChainConfig, has_source: bool) -> pl.Expr:
@@ -586,11 +669,12 @@ def drop_recorded_mislabels(
     if actions.height == 0 or not config.recorded_mislabels:
         return actions, stats
     keep_idx, dropped = [], []
+    wanted = {(s, d, _ratio_key(f), _ratio_key(t)): c for (s, d, f, t), c in config.recorded_mislabels.items()}
     for i, r in enumerate(actions.iter_rows(named=True)):
-        key = (r["symbol"], str(r["date"]), int(r["ratio_from"]), int(r["ratio_to"]))
-        if key in config.recorded_mislabels:
+        key = (r["symbol"], str(r["date"]), _ratio_key(r["ratio_from"]), _ratio_key(r["ratio_to"]))
+        if key in wanted:
             dropped.append({k: r[k] for k in ("symbol", "date", "ratio_from", "ratio_to")}
-                           | {"citation": config.recorded_mislabels[key]})
+                           | {"citation": wanted[key]})
         else:
             keep_idx.append(i)
     out = actions.with_row_index("_ri").filter(pl.col("_ri").is_in(keep_idx)).drop("_ri")
@@ -646,6 +730,8 @@ def collapse_all(
     0. :func:`drop_recorded_mislabels` -- publicly-cited exclusions (spin-off class)
     1. :func:`drop_post_coverage_actions` -- claims dated after the final bar; runs before
        clustering so a post-coverage row can never win a duplicate-cluster tiebreak
+    1b. :func:`compose_same_day_legs` -- one source's same-day legs (reverse + forward) become one
+       composite event before any duplicate/conflict logic can mistake them for competing claims
     2. :func:`collapse_duplicate_actions` -- same-event multi-source rows
     3. :func:`collapse_same_date_conflicts` -- contradictory same-date rows
     4. :func:`collapse_near_date_conflicts` -- different-ratio rows within days of each other
@@ -664,12 +750,13 @@ def collapse_all(
     """
     c0, s0 = drop_recorded_mislabels(actions, config=config)
     c05, s05 = drop_post_coverage_actions(c0, last_date_fn=last_date_fn)
-    c1, s1 = collapse_duplicate_actions(c05, config=config, gap_fn=gap_fn)
+    c07, s07 = compose_same_day_legs(c05, config=config, gap_fn=gap_fn)
+    c1, s1 = collapse_duplicate_actions(c07, config=config, gap_fn=gap_fn)
     c2, s2 = collapse_same_date_conflicts(c1, config=config, gap_fn=gap_fn)
     c3, s3 = collapse_near_date_conflicts(c2, config=config, gap_fn=gap_fn)
     c35, s35 = snap_actions_to_tape(c3, config=config, series_fn=series_fn, gap_fn=gap_fn)
     c4, s4 = refute_phantom_actions(c35, config=config, gap_fn=gap_fn, vintage_fn=vintage_fn)
     return c4, {
-        "mislabel": s0, "post_coverage": s05, "duplicate": s1, "same_date": s2,
+        "mislabel": s0, "post_coverage": s05, "composite": s07, "duplicate": s1, "same_date": s2,
         "near_date": s3, "snap": s35, "phantom": s4,
     }

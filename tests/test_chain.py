@@ -341,7 +341,7 @@ def test_collapse_all_end_to_end():
         last_date_fn=make_last_bar_date_fn(series_fn=series_fn), series_fn=series_fn,
     )
     assert collapsed.height == 1
-    assert set(stats.keys()) == {"mislabel", "post_coverage", "duplicate", "same_date",
+    assert set(stats.keys()) == {"mislabel", "post_coverage", "composite", "duplicate", "same_date",
                                  "near_date", "snap", "phantom"}
 
 

@@ -32,10 +32,12 @@ jump actually is when it was misdated, and rejected when the prices show nothing
 
 | Module | What it does |
 |---|---|
-| `split_adjustment_tool.chain` | **Cleans split claims.** Collapses duplicates from several sources (but never merges two real splits that each show up in the prices), resolves same-day and near-day contradictions by the measured price jump, drops claims after your data ends, moves misdated claims to the real jump, and rejects lone phantoms on a flat tape. Claims across a trading halt are kept and flagged as unmeasurable, never rejected. |
+| `split_adjustment_tool.chain` | **Cleans split claims.** Collapses duplicates from several sources (but never merges two real splits that each show up in the prices), resolves same-day and near-day contradictions by the measured price jump, drops claims after your data ends, moves misdated claims to the real jump, and rejects lone phantoms on a flat tape. Claims across a trading halt are kept and flagged as unmeasurable, never rejected. One source's same-day reverse + forward legs (an odd-lot cash-out) are combined into one event; ratios are exact numbers (1:1.0526 is not rounded). |
 | `split_adjustment_tool.factors` | **Applies them.** `apply_split_adjustment(bars, actions)` adds a cumulative price factor and volume factor (CRSP-style: anchored at the latest bar, effective from each ex-date) and `adj_open/high/low/close` + `adj_volume`; dollar volume is unchanged by construction. `build_factor_table` gives the sparse one-row-per-event form. |
 | `split_adjustment_tool.reconcile` | **Compares two adjustment histories event by event** (yours vs a vendor's): each split is matched, `DATE_DIFFERS`, `RATIO_DIFFERS`, or only on one side. Sparse vendor tables are aligned as-of, so they compare against a daily series. |
 | `split_adjustment_tool.breaks` | **Catches the price feed itself going wrong.** Finds lasting jumps no claim explains (judged against each stock's own normal moves) and asks an independent *witness* series (a second vendor, or daily closes built from your own intraday tape) what happened: `PROVIDER_BREAK` (the feed is wrong from that day, with the day it was fixed if it was), `REAL_MOVE` (real: a split your claims missed, or a genuine crash), or `UNEXPLAINED` when there is no witness. It also rejects a bogus claim that only the broken feed "confirms". |
+| `split_adjustment_tool.identity` | **Keeps companies apart when tickers change hands.** Describe which ticker each security used and when; claims are relabelled to the security and bars are served per security, so a renamed company is one continuous history and a reused ticker never attaches one company's splits to another's prices. |
+| `split_adjustment_tool.feedcheck` | **Catches two quieter feed failures** against a witness series: prices frozen for longer than the stock's own normal (`STALE_FEED`, or `ILLIQUID` when the witness was flat too) and bars stamped one session late or early (`DATE_SHIFT` spans with direction). |
 | `split_adjustment_tool.guard` | **Repairs bad price prints** in daily bars (a low far below the day's body, a high below its own open). With intraday data it repairs from the intraday extreme; a wild move the intraday data confirms is kept and flagged as `confirmed_extreme`, never overwritten. |
 
 **Timeframes and time zones.** Splits are checked on daily bars (a split is a once-a-day event); the
@@ -143,24 +145,25 @@ proof on its own — the real-data numbers above are the evidence.
   exclusion is a cited record you supply (`ChainConfig.recorded_mislabels`).
 - **Ratios under 2x (3-for-2, 5-for-4, stock dividends) are de-duplicated but not price-verified** —
   an ordinary day's move can mimic them, so a phantom 3-for-2 passes through.
-- **Keyed on the ticker string.** A reused ticker can attach one company's splits to another's
-  prices; give it one history per security.
+- **Ticker identity is opt-in.** Without a symbol history (`split_adjustment_tool.identity`) everything is
+  keyed on the ticker string, and a reused ticker can attach one company's splits to another's prices.
 - **Without intraday data, the bad-print guard cannot tell a real one-day crash from a bad print**
   on a volatile small stock. Give it intraday data for small caps.
 - **An isolated bad close that snaps back the next day** is caught only with a witness series (the
   `breaks` module reports it as a one-day window); without one it is not.
+- **The feed checks need a witness** (a second vendor, or daily closes built from your own intraday data)
+  to say what a frozen run or a shifted span was; without one they report `UNVERIFIED`.
 - Full method, rules and known gaps: [`docs/STANDARD.md`](docs/STANDARD.md).
 
 ## Status
 
-**v0.3.0 (alpha).** For educational and research use — see [`DISCLAIMER.md`](DISCLAIMER.md) (AS-IS,
+**v0.4.0 (alpha).** For educational and research use — see [`DISCLAIMER.md`](DISCLAIMER.md) (AS-IS,
 no warranty, not investment advice). [Apache 2.0](LICENSE). It ships code and a synthetic benchmark;
 it does not ship, sell or redistribute any market data — you bring your own bars and claims.
 Changes: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Roadmap
 
-- Permanent security IDs and ticker history (so a reused ticker can't inherit splits).
 - Point-in-time factors (`as_of`): adjust as it was known on a date, for honest backtests.
 - Event types beyond splits (stock dividends, spin-offs, rights) with distribution factors.
 - A command-line tool; a PyPI release; a public real-data benchmark of hard cases.

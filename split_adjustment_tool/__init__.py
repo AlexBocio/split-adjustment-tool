@@ -21,7 +21,7 @@ Full method: ``docs/STANDARD.md``. Full API: see each module's docstring
 """
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from split_adjustment_tool.breaks import (
     BreakConfig,
@@ -36,6 +36,7 @@ from split_adjustment_tool.chain import (
     collapse_duplicate_actions,
     collapse_near_date_conflicts,
     collapse_same_date_conflicts,
+    compose_same_day_legs,
     drop_post_coverage_actions,
     drop_recorded_mislabels,
     make_close_series_fn,
@@ -45,6 +46,7 @@ from split_adjustment_tool.chain import (
     snap_actions_to_tape,
 )
 from split_adjustment_tool.factors import apply_split_adjustment, build_factor_table
+from split_adjustment_tool.feedcheck import FeedCheckConfig, scan_date_shifts, scan_stale_runs
 from split_adjustment_tool.gauntlet import (
     DEFECT_CLASSES,
     GauntletConfig,
@@ -53,6 +55,13 @@ from split_adjustment_tool.gauntlet import (
     score_run,
 )
 from split_adjustment_tool.guard import GuardConfig, apply_bad_print_guard
+from split_adjustment_tool.identity import (
+    SYMBOL_HISTORY_SCHEMA,
+    SecurityBarProvider,
+    rekey_by_security,
+    symbol_history,
+    validate_symbol_history,
+)
 from split_adjustment_tool.locator import find_unique_boundary
 from split_adjustment_tool.providers import (
     ActionSource,
@@ -77,9 +86,10 @@ from split_adjustment_tool.reconcile import (
 __all__ = [
     "BreakConfig", "scan_unexplained_jumps", "classify_jumps", "check_claims_against_witness",
     "apply_split_adjustment", "build_factor_table",
+    "FeedCheckConfig", "scan_stale_runs", "scan_date_shifts",
     "__version__",
     # chain
-    "ChainConfig", "TAPE_CONFIRMED_SOURCE", "collapse_all", "collapse_duplicate_actions",
+    "ChainConfig", "TAPE_CONFIRMED_SOURCE", "collapse_all", "collapse_duplicate_actions", "compose_same_day_legs",
     "collapse_same_date_conflicts", "collapse_near_date_conflicts", "snap_actions_to_tape",
     "refute_phantom_actions", "drop_post_coverage_actions", "drop_recorded_mislabels",
     "make_close_series_fn", "make_gap_fn", "make_last_bar_date_fn",
@@ -87,6 +97,9 @@ __all__ = [
     "find_unique_boundary",
     # guard
     "GuardConfig", "apply_bad_print_guard",
+    # identity
+    "SYMBOL_HISTORY_SCHEMA", "symbol_history", "validate_symbol_history", "rekey_by_security",
+    "SecurityBarProvider",
     # reconcile
     "ReconcileConfig", "ReconciliationClass", "reconcile_symbol", "reconcile_all",
     "reconciliation_gate",

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0 — 2026-10-08
+
+### Added
+- `split_adjustment_tool.identity`: permanent security IDs. `symbol_history` (which ticker a security traded
+  under, and when; overlapping ownership of one ticker is refused), `rekey_by_security` (relabel claims or
+  any dated rows from ticker to security ID by date), `SecurityBarProvider` (bars by security: a renamed
+  company is one continuous history, a reused ticker is cut at the hand-over). Every other module works on
+  security IDs unchanged.
+- `split_adjustment_tool.feedcheck`: `scan_stale_runs` (identical closes for longer than the symbol's own
+  normal; against a witness: `STALE_FEED` / `ILLIQUID` / `UNVERIFIED`) and `scan_date_shifts` (bars stamped
+  one session late or early, found as spans with direction), `FeedCheckConfig`.
+- `compose_same_day_legs` (also step 1b of `collapse_all`): one source's same-day reverse + forward legs
+  (an odd-lot cash-out) become one composite event, so 1-for-1000 then 1000-for-1 nets to no change
+  instead of leaving a 1000x factor. Same-direction ratios are never legs, and a measured price gap that
+  matches one leg but not the composite leaves the rows as a conflict.
+
+### Changed
+- Ratios are exact numbers: `ratio_from` / `ratio_to` are Float64 in `ACTION_SCHEMA` and the CSV reader
+  (integer input still works); `recorded_mislabels` keys match 1, 1.0 and 1.00 alike instead of
+  truncating, so a 1:1.0526 event round-trips exactly.
+- `collapse_all` stats gain a `composite` stage.
+
+### Checked on real data (privately; no data in this repository)
+- Feed checks on 200 stocks over 21 months against a witness built from 1-minute bars: no flags on the
+  most liquid names, no date-shift spans; frozen-close runs were separated into genuinely illiquid
+  stretches (both feeds flat) and stale-feed stretches (the witness moved, up to 19 sessions long).
+- Identity on 150 reused tickers: keyed on the ticker, a later company's split rescaled 29,879 of the
+  earlier company's daily bars; keyed on the security, none.
+- Same-day legs in a 14,213-row split-claims table: one reverse+forward pair composed to a no-op; one
+  same-direction pair (an approved range quoted next to the final ratio) correctly left as a conflict —
+  the case that made same-direction ratios ineligible.
+
 ## 0.3.0 — 2026-10-07
 
 ### Added

@@ -54,8 +54,8 @@ BAR_SCHEMA = {
 #: split is ratio_from=10, ratio_to=1. `source` and `type` are optional metadata (may be
 #: null) -- never required for the math, only for source-rank tie-breaking and bookkeeping.
 ACTION_SCHEMA = {
-    "symbol": pl.String, "date": pl.Date, "ratio_from": pl.Int64,
-    "ratio_to": pl.Int64, "source": pl.String, "type": pl.String,
+    "symbol": pl.String, "date": pl.Date, "ratio_from": pl.Float64,
+    "ratio_to": pl.Float64, "source": pl.String, "type": pl.String,
 }
 
 
@@ -219,7 +219,10 @@ class CSVActionSource:
     def get_actions(self) -> pl.DataFrame:
         if not self._path.exists():
             return pl.DataFrame(schema=ACTION_SCHEMA)
-        df = pl.read_csv(self._path, try_parse_dates=True).with_columns(pl.col("date").cast(pl.Date))
+        df = pl.read_csv(self._path, try_parse_dates=True).with_columns(
+            pl.col("date").cast(pl.Date),
+            # ratios are exact numbers (1:1.0526, 2:3 ...), never truncated to integers
+            pl.col("ratio_from").cast(pl.Float64), pl.col("ratio_to").cast(pl.Float64))
         return _with_optional_columns(df, ("source", "type"))
 
 
