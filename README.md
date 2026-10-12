@@ -64,9 +64,15 @@ Parquet and in-memory implementations included). It never opens a database or ca
 ## Quickstart
 
 ```bash
+pip install split-adjustment-tool
+python -m split_adjustment_tool.demo      # the benchmark, end to end, in a few seconds
+```
+
+From source (to run the tests or change the code):
+
+```bash
 git clone https://github.com/AlexBocio/split-adjustment-tool && cd split-adjustment-tool
 pip install -e .
-python -m split_adjustment_tool.demo      # the benchmark, end to end, in a few seconds
 ```
 
 ```python
