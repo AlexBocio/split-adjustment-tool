@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 — 2026-10-12
+
+### Changed
+- First release on PyPI: `pip install split-adjustment-tool`. Package author set to Alex Bocio (Alt Data Forge).
+  No code changes from 0.4.0.
+
+### Fixed
+- Windows: depend on `tzdata` (Windows has no system time-zone database), so time-zone-aware bars
+  no longer fail with `ZoneInfoNotFoundError`.
+
 ## 0.4.0 — 2026-10-08
 
 ### Added

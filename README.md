@@ -157,7 +157,7 @@ proof on its own — the real-data numbers above are the evidence.
 
 ## Status
 
-**v0.4.0 (alpha).** For educational and research use — see [`DISCLAIMER.md`](DISCLAIMER.md) (AS-IS,
+**v0.4.1 (alpha).** For educational and research use — see [`DISCLAIMER.md`](DISCLAIMER.md) (AS-IS,
 no warranty, not investment advice). [Apache 2.0](LICENSE). It ships code and a synthetic benchmark;
 it does not ship, sell or redistribute any market data — you bring your own bars and claims.
 Changes: [`CHANGELOG.md`](CHANGELOG.md).

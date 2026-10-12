@@ -21,7 +21,7 @@ Full method: ``docs/STANDARD.md``. Full API: see each module's docstring
 """
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from split_adjustment_tool.breaks import (
     BreakConfig,
